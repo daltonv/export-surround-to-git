@@ -136,12 +136,13 @@ actionMap = {"add"                   : Actions.FILE_MODIFY,
 
 class DatabaseRecord:
     def __init__(self, tuple):
-        self.init(tuple[0], tuple[1], tuple[2], tuple[3], tuple[4], tuple[5], tuple[6], tuple[7], tuple[8], tuple[9])
+        self.init(tuple[0], tuple[1], tuple[2], tuple[3], tuple[4], tuple[5], tuple[6], tuple[7], tuple[8], tuple[9], tuple[10])
 
-    def init(self, timestamp, action, mainline, branch, path, origPath, version, author, comment, data):
+    def init(self, timestamp, action, mainline, branch, path, origPath, version, author, comment, data, repo):
         self.timestamp = timestamp
         self.action = action
         self.mainline = mainline
+        self.repo = repo
         self.branch = branch
         self.path = path
         self.origPath = origPath
@@ -155,7 +156,7 @@ class DatabaseRecord:
         self.blob_mark = mark
 
     def get_tuple(self):
-        return (self.timestamp, self.action, self.mainline, self.branch, self.path, self.origPath, self.version, self.author, self.comment, self.data)
+        return (self.timestamp, self.action, self.mainline, self.branch, self.path, self.origPath, self.version, self.author, self.comment, self.data, self.repo)
 
 
 def verify_surround_environment():
@@ -365,7 +366,7 @@ def create_database():
     database = sqlite3.connect(name)
     c = database.cursor()
     # we intentionally avoid duplicates via the PRIMARY KEY
-    c.execute('''CREATE TABLE operations (timestamp INTEGER NOT NULL, action INTEGER NOT NULL, mainline TEXT NOT NULL, branch TEXT NOT NULL, path TEXT, origPath TEXT, version INTEGER, author TEXT, comment TEXT, data TEXT, PRIMARY KEY(action, mainline, branch, path, origPath, version, author, data))''')
+    c.execute('''CREATE TABLE operations (timestamp INTEGER NOT NULL, action INTEGER NOT NULL, mainline TEXT NOT NULL, branch TEXT NOT NULL, path TEXT, origPath TEXT, version INTEGER, author TEXT, comment TEXT, data TEXT, repo TEXT NOT NULL, PRIMARY KEY(action, mainline, branch, path, origPath, version, author, data))''')
     database.commit()
     return database
 
@@ -373,7 +374,7 @@ def create_database():
 def add_record_to_database(record, database):
     c = database.cursor()
     try:
-        c.execute('''INSERT INTO operations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', record.get_tuple())
+        c.execute('''INSERT INTO operations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', record.get_tuple())
     except sqlite3.IntegrityError as e:
         # TODO is there a better way to detect duplicates?  is sqlite3.IntegrityError too wide a net?
         #sys.stderr.write("\nDetected duplicate record %s" % str(record.get_tuple()))
@@ -387,6 +388,11 @@ def add_record_to_database(record, database):
 
 def cmd_parse(mainline, path, database):
     sys.stderr.write("[+] Beginning parse phase...")
+
+    # store the repo to be added to the db later. The path.join operation ensures
+    # we always get the trailing '/' char. TODO we might need to force windows
+    # to use linux paths here
+    repo = os.path.join(path, "")
 
     branches = find_all_branches_in_mainline_containing_path(mainline, path)
 
@@ -417,7 +423,7 @@ def cmd_parse(mainline, path, database):
                     # string for origPath (its irrelevant in the export phase for this action) and set the version
                     # to one. We cant use None/NULL for these values as SQLITE doesnt consider NULL==NULL as a true
                     # statement.
-                    add_record_to_database(DatabaseRecord((epoch, branchAction, mainline, branch, path, "NULL", 1, author, comment, data)), database)
+                    add_record_to_database(DatabaseRecord((epoch, branchAction, mainline, branch, path, "NULL", 1, author, comment, data, repo)), database)
                 else:
                     if origPath:
                         if action == "renamed":
@@ -428,7 +434,7 @@ def cmd_parse(mainline, path, database):
                             data = os.path.join(data, fileWalk)
                     else:
                         origFullPath = None
-                    add_record_to_database(DatabaseRecord((epoch, actionMap[action], mainline, branch, fullPathWalk, origFullPath, version, author, comment, data)), database)
+                    add_record_to_database(DatabaseRecord((epoch, actionMap[action], mainline, branch, fullPathWalk, origFullPath, version, author, comment, data, repo)), database)
 
     sys.stderr.write("\n[+] Parse phase complete")
 
@@ -517,7 +523,7 @@ def print_blob_for_file(branch, fullPath, timestamp=None):
     return mark
 
 
-def process_database_record_group(c, mainline):
+def process_database_record_group(c):
     global mark
 
     # will contain a list of the MODIFY, DELETE, and RENAME records in this
@@ -564,6 +570,8 @@ def process_database_record_group(c, mainline):
             # replay branch state from above-recorded marks
             iterMark = startMark
             for file in files:
+                # Remove the repo from the file path
+                file = file.replace(record.repo, "")
                 print("M 100644 :%d %s" % (iterMark, file))
                 iterMark = iterMark + 1
             if iterMark != mark:
@@ -650,18 +658,27 @@ def process_database_record_group(c, mainline):
             print("data 0")
 
         for record in normal_records:
+            # fixup the paths so the root of the git repo matches the root
+            # of the scm repo origonally passed in
+            path = record.path.replace(record.repo, "")
+            if record.origPath and record.origPath != "NULL":
+                origPath = record.origPath.replace(record.repo, "")
+                if record.data:
+                    data = record.data.replace(record.repo, "")
+
             if record.action == Actions.FILE_MODIFY:
                 if record.origPath and record.origPath != "NULL":
                     # looks like there was a previous rename.  use the original name.
-                    print("M 100644 :%d %s" % (record.blob_mark, record.origPath))
+                    print("M 100644 :%d %s" % (record.blob_mark, origPath))
                 else:
                     # no previous rename.  good to use the current name.
-                    print("M 100644 :%d %s" % (record.blob_mark, record.path))
+                    print("M 100644 :%d %s" % (record.blob_mark, path))
             elif record.action == Actions.FILE_DELETE:
-                print("D %s" % record.path)
+                print("D %s" % path)
             elif record.action == Actions.FILE_RENAME:
+                origPath = record.origPath.replace(record.repo, "")
                 # NOTE we're not using record.path here, as there may have been multiple renames in the file's history
-                print("R %s %s" % (record.origPath, record.data))
+                print("R %s %s" % (origPath, data))
             else:
                 raise Exception("Unknown record action")
 
