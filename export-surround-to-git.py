@@ -517,7 +517,7 @@ def print_blob_for_file(branch, fullPath, timestamp=None):
     return mark
 
 
-def process_database_record_group(c):
+def process_database_record_group(c, mainline):
     global mark
 
     # will contain a list of the MODIFY, DELETE, and RENAME records in this
@@ -533,7 +533,10 @@ def process_database_record_group(c):
             # the purpose of this commit it to bring the branch state to match the snapshot exactly.
 
             print("reset TAG_FIXUP")
-            print("from refs/heads/%s" % translate_branch_name(record.branch))
+            parentBranch =  record.branch
+            if record.branch == record.mainline:
+                parentBranch = "master"
+            print("from refs/heads/%s" % translate_branch_name(parentBranch))
 
             # get all files contained within snapshot
             files = find_all_files_in_branches_under_path(record.mainline, [record.data], record.path)
@@ -583,8 +586,10 @@ def process_database_record_group(c):
             # the idea hers is to simply 'reset' to create our new branch, the name of which is contained in the 'data' field
 
             print("reset refs/heads/%s" % translate_branch_name(record.data))
-
-            parentBranch = translate_branch_name(record.branch)
+            parentBranch = record.branch
+            if record.branch == record.mainline:
+                parentBranch = "master"
+            parentBranch = translate_branch_name(parentBranch)
             if is_snapshot_branch(parentBranch, os.path.split(record.path)[0]):
                 # Git won't let us refer to the tag directly (maybe this will be fixed in a future version).
                 # for now, we have to refer to the associated tag mark instead.
@@ -621,7 +626,10 @@ def process_database_record_group(c):
                 unique_comments[record.comment].append(record.path)
 
         mark = mark + 1
-        print("commit refs/heads/%s" % translate_branch_name(normal_records[0].branch))
+        branch = record.branch
+        if branch == record.mainline:
+            branch = "master"
+        print("commit refs/heads/%s" % translate_branch_name(branch))
         print("mark :%d" % mark)
         print("author %s <%s> %s %s" % (normal_records[0].author, normal_records[0].author, normal_records[0].timestamp, timezone))
         print("committer %s <%s> %s %s" % (normal_records[0].author, normal_records[0].author, normal_records[0].timestamp, timezone))
