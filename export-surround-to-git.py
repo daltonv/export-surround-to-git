@@ -196,15 +196,12 @@ def find_all_branches_in_mainline_containing_path(mainline, path):
 
     our_branches = []
     # Parse the branches and find the branches in the path provided
-    # We can ignore snapshot branches here. Their parent branch will be found,
-    # and it has all snapshot branch information.
     for branch in branches:
         if branch.startswith(path):
             # Since the branch currently shows the full path we need to get the
             # the branch name by getting only the last element in the path
             match = re.search(r'\/([^\/]+)\s\<.+>\s\((baseline|mainline|snapshot)\)', branch)
-            if match.group(2) != 'snapshot':
-                our_branches.append(match.group(1))
+            our_branches.append(match.group(1))
 
     return our_branches
 
@@ -389,17 +386,23 @@ def add_record_to_database(record, database):
 def cmd_parse(mainline, path, database):
     sys.stderr.write("[+] Beginning parse phase...")
 
-    # store the repo to be added to the db later. The path.join operation ensures
-    # we always get the trailing '/' char. TODO we might need to force windows
-    # to use linux paths here
+    # The path.join operation ensures we always get the trailing '/' char.
+    # TODO we might need to force windows to use linux paths here
     repo = os.path.join(path, "")
 
-    branches = find_all_branches_in_mainline_containing_path(mainline, path)
+    branches = find_all_branches_in_mainline_containing_path(mainline, repo)
+    # we need to do this as the function above won't find mainline under its
+    # path with the trailing '/'
+    branches.append(mainline)
 
     # NOTE how we're passing branches, not branch.  this is to detect deleted files.
-    filesToWalk = find_all_files_in_branches_under_path(mainline, branches, path)
+    filesToWalk = find_all_files_in_branches_under_path(mainline, branches, repo)
 
     for branch in branches:
+        # Skip snapshot branches
+        if is_snapshot_branch(branch, path):
+            continue
+
         sys.stderr.write("\n[*] Parsing branch '%s' ..." % branch)
 
         for fullPathWalk in filesToWalk:
