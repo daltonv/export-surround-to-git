@@ -56,6 +56,7 @@ import time
 import datetime
 import sqlite3
 import os
+import pathlib
 import shutil
 
 
@@ -237,7 +238,8 @@ def find_all_files_in_branches_under_path(mainline, branches, path):
                 if end_file_index == -1:
                     raise Exception("Couldn't find the filename in ls output")
                 file = line[:end_file_index].strip()
-                fileSet.add("%s/%s" % (lastDirectory, file))
+                fullPath = pathlib.PurePosixPath("%s/%s" % (lastDirectory, file))
+                fileSet.add(fullPath)
 
     return fileSet
 
@@ -253,7 +255,8 @@ def is_snapshot_branch(branch, repo):
 
 
 def find_all_file_versions(mainline, branch, path):
-    repo, file = os.path.split(path)
+    repo = path.parent
+    file = path.name
 
     cmd = sscm + ' history "%s" -b"%s" -p"%s" ' % (file, branch, repo)
     if username and password:
@@ -279,7 +282,7 @@ def find_all_file_versions(mainline, branch, path):
             # set bFoundOne once we've found our first version
             bFoundOne = True
             action = result.group("action")
-            origFile = result.group("from")
+            origFile = pathlib.PurePosixPath(result.group("from")) if result.group("from") else "NULL"
             to = result.group("to")
             author = result.group("author")
             version = result.group("version")
@@ -331,7 +334,7 @@ def find_all_file_versions(mainline, branch, path):
                         # set bFoundOne once we've found our first version
                         bFoundOne = True
                         action = result.group("action")
-                        origFile = result.group("from")
+                        origFile = pathlib.PurePosixPath(result.group("from")) if result.group("from") else "NULL"
                         to = result.group("to")
                         author = result.group("author")
                         version = result.group("version")
@@ -383,12 +386,8 @@ def add_record_to_database(record, database):
         database.commit()
 
 
-def cmd_parse(mainline, path, database):
+def cmd_parse(mainline, repo, database):
     sys.stderr.write("[+] Beginning parse phase...")
-
-    # The path.join operation ensures we always get the trailing '/' char.
-    # TODO we might need to force windows to use linux paths here
-    repo = os.path.join(path, "")
 
     branches = find_all_branches_in_mainline_containing_path(mainline, repo)
     # we need to do this as the function above won't find mainline under its
@@ -400,7 +399,7 @@ def cmd_parse(mainline, path, database):
 
     for branch in branches:
         # Skip snapshot branches
-        if is_snapshot_branch(branch, path):
+        if is_snapshot_branch(branch, repo):
             continue
 
         sys.stderr.write("\n[*] Parsing branch '%s' ..." % branch)
@@ -408,7 +407,8 @@ def cmd_parse(mainline, path, database):
         for fullPathWalk in filesToWalk:
             #sys.stderr.write("\n[*] \tParsing file '%s' ..." % fullPathWalk)
 
-            pathWalk, fileWalk = os.path.split(fullPathWalk)
+            pathWalk = fullPathWalk.parent
+            fileWalk = fullPathWalk.name
 
             versions = find_all_file_versions(mainline, branch, fullPathWalk)
             #sys.stderr.write("\n[*] \t\tversions = %s" % versions)
@@ -426,18 +426,17 @@ def cmd_parse(mainline, path, database):
                     # string for origPath (its irrelevant in the export phase for this action) and set the version
                     # to one. We cant use None/NULL for these values as SQLITE doesnt consider NULL==NULL as a true
                     # statement.
-                    add_record_to_database(DatabaseRecord((epoch, branchAction, mainline, branch, path, "NULL", 1, author, comment, data, repo)), database)
+                    add_record_to_database(DatabaseRecord((epoch, branchAction, mainline, branch, repo, "NULL", 1, author, comment, data, repo)), database)
                 else:
+                    origFullPath = None
                     if origPath:
                         if action == "renamed":
-                            origFullPath = os.path.join(pathWalk, origPath)
-                            data = os.path.join(pathWalk, data)
+                            origFullPath = str(pathWalk / origPath)
+                            data = str(pathWalk / data)
                         elif action == "moved":
-                            origFullPath = os.path.join(origPath, fileWalk)
-                            data = os.path.join(data, fileWalk)
-                    else:
-                        origFullPath = None
-                    add_record_to_database(DatabaseRecord((epoch, actionMap[action], mainline, branch, fullPathWalk, origFullPath, version, author, comment, data, repo)), database)
+                            origFullPath = str(origPath / fileWalk)
+                            data = str(data / fileWalk)
+                    add_record_to_database(DatabaseRecord((epoch, actionMap[action], mainline, branch, str(fullPathWalk), origFullPath, version, author, comment, data, repo)), database)
 
     sys.stderr.write("\n[+] Parse phase complete")
 
@@ -502,12 +501,12 @@ def print_blob_for_file(branch, fullPath, timestamp=None):
         # get specified version. You would think the -v option would get the
         # version of the file you want, but this does not work for deleted files.
         # we need to use the time stamp with -s
-        cmd = sscm + ' get "%s" -b"%s" -p"%s" -d"%s" -f -i -s"%s" ' % (file, branch, path, scratchDir, time_string)
+        cmd = sscm + ' get "%s" -b"%s" -p"%s" -d"%s" -f -i -s"%s" -e ' % (file, branch, path, scratchDir, time_string)
         if username and password:
             cmd = cmd + '-y"%s":"%s" ' % (username, password)
     else:
         # get newest version
-        cmd = sscm + ' get "%s" -b"%s" -p"%s" -d"%s" -f -i ' % (file, branch, path, scratchDir)
+        cmd = sscm + ' get "%s" -b"%s" -p"%s" -d"%s" -f -i -e ' % (file, branch, path, scratchDir)
         if username and password:
             cmd = cmd + '-y"%s":"%s" ' % (username, password)
     with open(os.devnull, 'w') as fnull:
@@ -541,11 +540,11 @@ def process_database_record_group(c):
             # this is necessary since Surround version-controls individual files, and Git controls the state of the entire branch.
             # the purpose of this commit it to bring the branch state to match the snapshot exactly.
 
-            print("reset TAG_FIXUP")
+            sys.stdout.buffer.write(b"reset TAG_FIXUP\n")
             parentBranch =  record.branch
             if record.branch == record.mainline:
                 parentBranch = "master"
-            print("from refs/heads/%s" % translate_branch_name(parentBranch))
+            sys.stdout.buffer.write(("from refs/heads/%s\n" % translate_branch_name(parentBranch)).encode("utf-8"))
 
             # get all files contained within snapshot
             files = find_all_files_in_branches_under_path(record.mainline, [record.data], record.path)
@@ -557,38 +556,43 @@ def process_database_record_group(c):
                     startMark = blobMark
 
             mark = mark + 1
-            print("commit TAG_FIXUP")
-            print("mark :%d" % mark)
+            sys.stdout.buffer.write(b"commit TAG_FIXUP\n")
+            sys.stdout.buffer.write(b"mark :%d\n" % mark)
             # we don't have the legit email addresses, so we just use the author as the email address
-            print("author %s <%s> %s %s" % (record.author, record.author, record.timestamp, timezone))
-            print("committer %s <%s> %s %s" % (record.author, record.author, record.timestamp, timezone))
+            sys.stdout.buffer.write(("author %s <%s> %s %s\n" % (record.author, record.author, record.timestamp, timezone)).encode("utf-8"))
+            sys.stdout.buffer.write(("committer %s <%s> %s %s\n" % (record.author, record.author, record.timestamp, timezone)).encode("utf-8"))
             if record.comment:
-                print("data %d" % len(record.comment))
-                print(record.comment)
+                comment = record.comment.encode("utf-8")
+                sys.stdout.buffer.write(b"data %d\n" % len(comment))
+                sys.stdout.buffer.write(comment)
+                sys.stdout.buffer.write(b"\n")
             else:
-                print("data 0")
+                sys.stdout.buffer.write(b"data 0\n")
 
             # 'deleteall' tells Git to forget about previous branch state
-            print("deleteall")
+            sys.stdout.buffer.write(b"deleteall\n")
             # replay branch state from above-recorded marks
             iterMark = startMark
-            for file in files:
+            for filePath in files:
                 # Remove the repo from the file path
-                file = file.replace(record.repo, "")
-                print("M 100644 :%d %s" % (iterMark, file))
+                repo = pathlib.PurePosixPath(record.repo)
+                file = filePath.relative_to(repo)
+                sys.stdout.buffer.write(("M 100644 :%d %s\n" % (iterMark, file)).encode("utf-8"))
                 iterMark = iterMark + 1
             if iterMark != mark:
                 raise Exception("Marks fell out of sync while tagging '%s'." % record.data)
 
             # finally, tag our result
-            print("tag %s" % translate_branch_name(record.data))
-            print("from TAG_FIXUP")
-            print("tagger %s <%s> %s %s" % (record.author, record.author, record.timestamp, timezone))
+            sys.stdout.buffer.write(("tag %s\n" % translate_branch_name(record.data)).encode("utf-8"))
+            sys.stdout.buffer.write(b"from TAG_FIXUP\n")
+            sys.stdout.buffer.write(("tagger %s <%s> %s %s\n" % (record.author, record.author, record.timestamp, timezone)).encode("utf-8"))
             if record.comment:
-                print("data %d" % len(record.comment))
-                print(record.comment)
+                comment = record.comment.encode("utf-8")
+                sys.stdout.buffer.write(b"data %d\n" % len(comment))
+                sys.stdout.buffer.write(comment)
+                sys.stdout.buffer.write(b"\n")
             else:
-                print("data 0")
+                sys.stdout.buffer.write(b"data 0\n")
 
             # save off the mapping between the tag name and the tag mark
             tagDict[translate_branch_name(record.data)] = mark
@@ -596,7 +600,7 @@ def process_database_record_group(c):
         elif record.action == Actions.BRANCH_BASELINE:
             # the idea hers is to simply 'reset' to create our new branch, the name of which is contained in the 'data' field
 
-            print("reset refs/heads/%s" % translate_branch_name(record.data))
+            sys.stdout.buffer.write(("reset refs/heads/%s\n" % translate_branch_name(record.data)).encode("utf-8"))
             parentBranch = record.branch
             if record.branch == record.mainline:
                 parentBranch = "master"
@@ -605,10 +609,10 @@ def process_database_record_group(c):
                 # Git won't let us refer to the tag directly (maybe this will be fixed in a future version).
                 # for now, we have to refer to the associated tag mark instead.
                 # (if this is fixed in the future, we can get rid of tagDict altogether)
-                print("from :%d" % tagDict[parentBranch])
+                sys.stdout.buffer.write(b"from :%d\n" % tagDict[parentBranch])
             else:
                 # baseline branch
-                print("from refs/heads/%s" % parentBranch)
+                sys.stdout.buffer.write(("from refs/heads/%s\n" % parentBranch).encode("utf-8"))
 
         elif record.action == Actions.FILE_MODIFY or record.action == Actions.FILE_DELETE or record.action == Actions.FILE_RENAME:
             # this is the usual case
@@ -640,10 +644,10 @@ def process_database_record_group(c):
         branch = record.branch
         if branch == record.mainline:
             branch = "master"
-        print("commit refs/heads/%s" % translate_branch_name(branch))
-        print("mark :%d" % mark)
-        print("author %s <%s> %s %s" % (normal_records[0].author, normal_records[0].author, normal_records[0].timestamp, timezone))
-        print("committer %s <%s> %s %s" % (normal_records[0].author, normal_records[0].author, normal_records[0].timestamp, timezone))
+        sys.stdout.buffer.write(("commit refs/heads/%s\n" % translate_branch_name(branch)).encode("utf-8"))
+        sys.stdout.buffer.write(("mark :%d\n" % mark).encode("utf-8"))
+        sys.stdout.buffer.write(("author %s <%s> %s %s\n" % (normal_records[0].author, normal_records[0].author, normal_records[0].timestamp, timezone)).encode("utf-8"))
+        sys.stdout.buffer.write(("committer %s <%s> %s %s\n" % (normal_records[0].author, normal_records[0].author, normal_records[0].timestamp, timezone)).encode("utf-8"))
         if len(unique_comments):
             full_comment = ""
             for comment, files in unique_comments.items():
@@ -655,33 +659,35 @@ def process_database_record_group(c):
                     for file in files:
                         full_comment += "- %s\n" % file
                     full_comment += "\n"
-            print("data %d" % len(full_comment))
-            print(full_comment)
+            sys.stdout.buffer.write(b"data %d\n" % len(full_comment))
+            sys.stdout.buffer.write(full_comment.encode("utf-8"))
         else:
-            print("data 0")
+            sys.stdout.buffer.write(b"data 0\n")
 
         for record in normal_records:
             # fixup the paths so the root of the git repo matches the root
             # of the scm repo origonally passed in
-            path = record.path.replace(record.repo, "")
+            full_path = pathlib.PurePosixPath(record.path)
+            repo = pathlib.PurePosixPath(record.repo)
+            path = full_path.relative_to(repo)
             if record.origPath and record.origPath != "NULL":
-                origPath = record.origPath.replace(record.repo, "")
-                if record.data:
-                    data = record.data.replace(record.repo, "")
+                full_origPath = pathlib.PurePosixPath(record.origPath)
+                origPath = full_origPath.relative_to(repo)
 
             if record.action == Actions.FILE_MODIFY:
                 if record.origPath and record.origPath != "NULL":
                     # looks like there was a previous rename.  use the original name.
-                    print("M 100644 :%d %s" % (record.blob_mark, origPath))
+                    sys.stdout.buffer.write(("M 100644 :%d %s\n" % (record.blob_mark, origPath)).encode("utf-8"))
                 else:
                     # no previous rename.  good to use the current name.
-                    print("M 100644 :%d %s" % (record.blob_mark, path))
+                    sys.stdout.buffer.write(("M 100644 :%d %s\n" % (record.blob_mark, path)).encode("utf-8"))
             elif record.action == Actions.FILE_DELETE:
-                print("D %s" % path)
+                sys.stdout.buffer.write(("D %s\n" % path).encode("utf-8"))
             elif record.action == Actions.FILE_RENAME:
-                origPath = record.origPath.replace(record.repo, "")
                 # NOTE we're not using record.path here, as there may have been multiple renames in the file's history
-                print("R %s %s" % (origPath, data))
+                full_data_path = pathlib.PurePosixPath(record.data)
+                data = full_data_path.relative_to(repo)
+                sys.stdout.buffer.write(("R %s %s\n" % (origPath, data)).encode("utf-8"))
             else:
                 raise Exception("Unknown record action")
 
