@@ -252,11 +252,13 @@ def find_all_branches_in_mainline_containing_path(mainline, path):
     our_branches = []
     # Parse the branches and find the branches in the path provided
     for branch in branches:
-        if branch.startswith(path):
+        if branch.startswith(str(path)):
             # Since the branch currently shows the full path we need to get the
             # the branch name by getting only the last element in the path
-            match = re.search(r'\/([^\/]+)\s\<.+>\s\((baseline|mainline|snapshot)\)', branch)
-            our_branches.append(match.group(1))
+            match = re.search(r'(.+\/([^\/]+))\s\<.+>\s\((baseline|mainline|snapshot)\)', branch)
+            found_branch = pathlib.PurePosixPath(match.group(1))
+            if str(found_branch).startswith((str(path) + '/')) or found_branch == path:
+                our_branches.append(found_branch.name)
 
     return our_branches
 
@@ -423,8 +425,10 @@ def add_record_to_database(record, database):
         database.commit()
 
 
-def cmd_parse(mainline, repo, database):
+def cmd_parse(mainline, path, database):
     sys.stderr.write("[+] Beginning parse phase...")
+
+    repo = pathlib.PurePosixPath(path)
 
     branches = find_all_branches_in_mainline_containing_path(mainline, repo)
 
@@ -458,7 +462,7 @@ def cmd_parse(mainline, repo, database):
                     # string for origPath (its irrelevant in the export phase for this action) and set the version
                     # to one. We cant use None/NULL for these values as SQLITE doesnt consider NULL==NULL as a true
                     # statement.
-                    add_record_to_database(DatabaseRecord((timestamp, branchAction, mainline, branch, repo, "NULL", 1, author, comment, data, repo)), database)
+                    add_record_to_database(DatabaseRecord((timestamp, branchAction, mainline, branch, str(repo), "NULL", 1, author, comment, data, str(repo))), database)
                 else:
                     origFullPath = None
                     if origPath:
@@ -468,7 +472,7 @@ def cmd_parse(mainline, repo, database):
                         elif action == SSCMFileAction.FileMoved:
                             origFullPath = str(origPath / fileWalk)
                             data = str(data / fileWalk)
-                    add_record_to_database(DatabaseRecord((timestamp, actionMap[action], mainline, branch, str(fullPathWalk), origFullPath, version, author, comment, data, repo)), database)
+                    add_record_to_database(DatabaseRecord((timestamp, actionMap[action], mainline, branch, str(fullPathWalk), origFullPath, version, author, comment, data, str(repo))), database)
 
     sys.stderr.write("\n[+] Parse phase complete")
 
