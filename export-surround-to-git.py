@@ -81,6 +81,8 @@ timezone = "-0500"
 sscm = "sscm"
 username = ""
 password = ""
+host = ""
+port = ""
 
 # keeps track of snapshot name --> mark number pairing
 tagDict = {}
@@ -93,42 +95,95 @@ class Actions:
     FILE_DELETE = 4
     FILE_RENAME = 5
 
-# map between Surround action and Action enum
-actionMap = {"add"                   : Actions.FILE_MODIFY,
-             "add to repository"     : Actions.FILE_MODIFY,
-             "add to branch"         : None,
-             "add from branch"       : Actions.FILE_MODIFY, # This doesnt feel like a modify. TODO invesitgate
-             "attach to issue"       : None,  # TODO maybe use lightweight Git tag to track this
-             "attach to test case"   : None,  # TODO maybe use lightweight Git tag to track this
-             "attach to requirement" : None,  # TODO maybe use lightweight Git tag to track this
-             "attach to observation" : None,  # TODO maybe use lightweight Git tag to track this
-             "attach to external"    : None,  # TODO maybe use lightweight Git tag to track this
-             "break share"           : None,
-             "Change state - Work in Progress" : None,
-             "checkin"               : Actions.FILE_MODIFY,
-             "delete"                : Actions.FILE_DELETE,
-             "duplicate"             : Actions.FILE_MODIFY,
-             "file destroyed"        : Actions.FILE_DELETE,
-             "file moved"            : Actions.FILE_RENAME,
-             "file renamed"          : Actions.FILE_RENAME,
-             "in label"              : None,  # TODO maybe treat this like a snapshot branch
-             "label"                 : None,  # TODO maybe treat this like a snapshot branch
-             "moved"                 : Actions.FILE_RENAME,
-             "promote"               : None,
-             "promote from"          : Actions.FILE_MODIFY,
-             "promote to"            : Actions.FILE_MODIFY,
-             "rebase from"           : Actions.FILE_MODIFY,
-             "rebase with merge"     : Actions.FILE_MODIFY,
-             "remove"                : Actions.FILE_DELETE,
-             "renamed"               : Actions.FILE_RENAME,
-             "repo destroyed"        : None,  # TODO might need to be Actions.FILE_DELETE
-             "repo moved"            : None,  # TODO might need to be Actions.FILE_DELETE
-             "repo renamed"          : None,  # TODO might need to be Actions.FILE_DELETE
-             "restore"               : Actions.FILE_MODIFY,
-             "share"                 : None,
-             "rollback file"         : Actions.FILE_MODIFY,
-             "rollback rebase"       : Actions.FILE_MODIFY,
-             "rollback promote"      : Actions.FILE_MODIFY}
+# similar to the SSCMFileAction enum from the API
+class SSCMFileAction:
+    AllActions = 0
+    AddToRepository = 1
+    AddToBranch = 2
+    AddFromBranch = 3
+    CheckIn = 4
+    Rebase = 5
+    RebaseWithMerge = 6
+    Label = 8
+    AttachToDefect = 9
+    Delete = 10
+    Undelete = 11
+    PromoteToBranch = 12
+    PromoteFromBranchWithMerge = 13
+    PromoteFromBranchWithOutMerge = 14
+    Share = 15
+    BreakShare = 16
+    BranchRenamed = 17
+    BranchRemoved = 18
+    BranchRestored = 19
+    FileRenamed = 20
+    RepoRenamed = 21
+    BranchDestroyed = 22
+    FileDestroyed = 23
+    RepoDestroyed = 24
+    BranchTypeChange = 25
+    BranchOwnerChange = 26
+    RollbackRebase = 27
+    RollbackPromote = 28
+    RollbackFile = 29
+    CustomFieldChanged = 30
+    StateChanged = 31
+    UnLabel = 32
+    AttachToTestCase = 33
+    AttachToRequirement = 34
+    DuplicateChanges = 35
+    FileMoved = 36
+    RepoMoved = 37
+    AttachedToExternal = 38
+    RollbackChanges = 39
+    ExportRepoToMainline = 40
+    FileShareRemoved = 41
+
+# map based on SSCMFileAction enum from the API
+actionMap = {
+    SSCMFileAction.AllActions                       : None,
+    SSCMFileAction.AddToRepository                  : Actions.FILE_MODIFY,
+    SSCMFileAction.AddToBranch                      : None,
+    SSCMFileAction.AddToBranch                      : Actions.FILE_MODIFY, # This doesn't feel like a modify. TODO investigate
+    SSCMFileAction.AddFromBranch                    : Actions.FILE_MODIFY,
+    SSCMFileAction.CheckIn                          : Actions.FILE_MODIFY,
+    SSCMFileAction.Rebase                           : None,
+    SSCMFileAction.RebaseWithMerge                  : None,
+    SSCMFileAction.Label                            : None,
+    SSCMFileAction.AttachToDefect                   : None,
+    SSCMFileAction.Delete                           : Actions.FILE_DELETE,
+    SSCMFileAction.Undelete                         : None,
+    SSCMFileAction.PromoteToBranch                  : Actions.FILE_MODIFY,
+    SSCMFileAction.PromoteFromBranchWithMerge       : Actions.FILE_MODIFY,
+    SSCMFileAction.PromoteFromBranchWithOutMerge    : Actions.FILE_MODIFY,
+    SSCMFileAction.Share                            : None,
+    SSCMFileAction.BreakShare                       : None,
+    SSCMFileAction.BranchRenamed                    : None,
+    SSCMFileAction.BranchRemoved                    : None,
+    SSCMFileAction.BranchRestored                   : None,
+    SSCMFileAction.FileRenamed                      : Actions.FILE_RENAME,
+    SSCMFileAction.RepoRenamed                      : None,
+    SSCMFileAction.BranchDestroyed                  : None,
+    SSCMFileAction.FileDestroyed                    : Actions.FILE_DELETE,
+    SSCMFileAction.RepoDestroyed                    : None,
+    SSCMFileAction.BranchTypeChange                 : None,
+    SSCMFileAction.BranchOwnerChange                : None,
+    SSCMFileAction.RollbackRebase                   : Actions.FILE_MODIFY,
+    SSCMFileAction.RollbackPromote                  : Actions.FILE_MODIFY,
+    SSCMFileAction.RollbackFile                     : Actions.FILE_MODIFY,
+    SSCMFileAction.CustomFieldChanged               : None,
+    SSCMFileAction.StateChanged                     : None,
+    SSCMFileAction.UnLabel                          : None,
+    SSCMFileAction.AttachToTestCase                 : None,
+    SSCMFileAction.AttachToRequirement              : None,
+    SSCMFileAction.DuplicateChanges                 : None,
+    SSCMFileAction.FileMoved                        : Actions.FILE_RENAME,
+    SSCMFileAction.RepoMoved                        : None,
+    SSCMFileAction.AttachedToExternal               : None,
+    SSCMFileAction.RollbackChanges                  : None,
+    SSCMFileAction.ExportRepoToMainline             : None,
+    SSCMFileAction.FileShareRemoved                 : None,
+}
 
 
 #
@@ -254,108 +309,91 @@ def is_snapshot_branch(branch, repo):
     return result.find("snapshot") != -1
 
 
+def get_file_rename(version, file, repo, branch):
+    cmd = sscm + ' history "%s" -b"%s" -p"%s" -v"%d:%d" ' % (file, branch, repo, version, version)
+    if username and password:
+        cmd += '-y"%s":"%s" ' % (username, password)
+
+    old = None
+    new = None
+
+    lines = get_lines_from_sscm_cmd(cmd)
+
+    # Note if for some reason there are multiple file renames in the same version
+    # we will ONLY take the last file rename.
+    for line in lines[4:]:
+        result = re.search(r'from\s\[([\S ]+)\]\sto\s\[([\S ]+)\]', line)
+        if result:
+            old = result.group(1)
+            new = result.group(2)
+
+    if (not old) and (not new):
+        full_file_path = repo / file
+        raise Exception("Could not find file rename info for %s" % full_file_path)
+
+    return (old, new)
+
+
 def find_all_file_versions(mainline, branch, path):
     repo = path.parent
     file = path.name
+    # The sscm history command is too difficult to parse corerectly so here we
+    # use a tool created with the sscm API that we control
+    sscmhist = pathlib.Path(sys.path[0]) / "sscmhist" / "sscmhist.exe"
+    if not sscmhist.exists():
+        raise Exception("sscmhist does not exit. Try compiling it")
 
-    cmd = sscm + ' history "%s" -b"%s" -p"%s" ' % (file, branch, repo)
+    cmd = str(sscmhist) + ' %s %s ' % (host, port)
     if username and password:
-        cmd = cmd + '-y"%s":"%s" ' % (username, password)
+        cmd += '%s %s ' % (username, password)
+    else:
+        # TODO handle this better
+        cmd += 'NULL NULL '
+    cmd += '"%s" "%s" "%s" "%s"' % (branch, branch, repo, file)
+
     lines = get_lines_from_sscm_cmd(cmd)
 
-    # this is complicated because the comment for a check-in will be on the line *following* a regex match
     versionList = []
-    comment = None
-    bFoundOne = False
-    # The first 4 lines are just the header of this printout
-    for line in lines[4:]:
-        #sys.stderr.write("\n=== Trying line = " + line)
 
-        result = histRegex.search(line)
-        if result:
-            # we have a new match.
-            #sys.stderr.write("\n******* line match!")
+    if lines:
+        # TODO: use an actual condition in the while loop instead of relying on
+        # the break.
+        while 1:
+            i = lines.index("--END_COMMENT--")
 
-            if bFoundOne:
-                # before processing this match, we need to commit the previously found version
-                versionList.append((timestamp, action, origFile, int(version), author, comment, data))
-            # set bFoundOne once we've found our first version
-            bFoundOne = True
-            action = result.group("action")
-            origFile = pathlib.PurePosixPath(result.group("from")) if result.group("from") else "NULL"
-            to = result.group("to")
-            author = result.group("author")
-            version = result.group("version")
-            timestamp = result.group("timestamp")
-            # reset comment
-            comment = None
-            if origFile and to:
-                # we're in a rename/move scenario
-                data = to
+            lines_group = lines[:i]
+
+            version = int(lines_group[0])
+            # strip the seconds out of the time as it is too precise. Many
+            # file changes only differ by a second as Surround alters each file
+            # as part of a group checkin operation
+            time_struct = time.localtime(int(lines_group[1]))
+            time_string = time.strftime("%Y%m%d%H:%M:59", time_struct)
+            new_time_struct = time.strptime(time_string, "%Y%m%d%H:%M:%S")
+            timestamp = int(time.mktime(new_time_struct))
+            action = int(lines_group[2])
+            data = lines_group[3]
+            if data == "(null)":
+                data = None
+            author = lines_group[4]
+            comment = '\n'.join(lines_group[5:])
+            origFile = "NULL"
+
+            # Unfortunately the API only tells us a rename happened and not
+            # what the rename was. To get these names we use a helper function
+            # that calls 'sscm history'. Finding just the rename info is
+            # relatively safe by parsing the output with regex.
+            if action == SSCMFileAction.FileMoved or action == SSCMFileAction.FileRenamed:
+                (oldName, newName) = get_file_rename(version , file, repo, branch)
+                data = pathlib.PurePosixPath(newName)
+                origFile = pathlib.PurePosixPath(oldName)
+
+            versionList.append((timestamp, action, origFile, version, author, comment, data))
+
+            if len(lines[i:]) > 1:
+                lines = lines[(i+1):]
             else:
-                # we're (possibly) in a branch scenario
-                data = result.group("data")
-        else:
-            # no match.  this must be a comment line (or the start of a new history line, with a line break).
-            #sys.stderr.write("\n------- no line match")
-
-            if not comment:
-                # start of comment
-                comment = re.sub("^ Comments \- ", "", line, count=1)
-            else:
-                # continuation of comment
-                comment += "\n" + line
-
-                # check for a multi-line comment that is actually a version match
-                commentLines = [real_line for real_line in comment.splitlines() if real_line]
-                substrings = []
-                # '-1' on following line is because we don't need to check the last comment line again.
-                # (we just checked it above.)
-                for i in range(len(commentLines) - 1):
-                    substrings.append('\n'.join(commentLines[i:len(commentLines)]))
-                for substring in substrings:
-                    #sys.stderr.write("\n----- Trying substring = " + substring)
-
-                    result = histRegex.search(substring)
-                    if result:
-                        # we have a new match
-
-                        # pull off end part of comment that we're recording as a version
-                        if result.start("action") == 0:
-                            # using the entire comment
-                            comment = None
-                        else:
-                            # leaving behind the previous comment
-                            comment = substring[:result.start("action")-1]
-
-                        if bFoundOne:
-                            # before processing this match, we need to commit the previously found version
-                            versionList.append((timestamp, action, origFile, int(version), author, comment, data))
-                        # set bFoundOne once we've found our first version
-                        bFoundOne = True
-                        action = result.group("action")
-                        origFile = pathlib.PurePosixPath(result.group("from")) if result.group("from") else "NULL"
-                        to = result.group("to")
-                        author = result.group("author")
-                        version = result.group("version")
-                        timestamp = result.group("timestamp")
-                        # reset comment
-                        comment = None
-                        if origFile and to:
-                            # we're in a rename/move scenario
-                            data = to
-                        else:
-                            # we're (possibly) in a branch scenario
-                            data = result.group("data")
-
-                        #sys.stderr.write("\n******* comment match! action = '" + str(action) + "' comment = '" + str(comment) + "'")
-                        break
-
-    # before moving on, we need to commit the last found version
-    if bFoundOne:
-        versionList.append((timestamp, action, origFile, int(version), author, comment, data))
-
-    #sys.stderr.write("\nreturning versionList = " + str(versionList))
+                break
 
     return versionList
 
@@ -390,9 +428,6 @@ def cmd_parse(mainline, repo, database):
     sys.stderr.write("[+] Beginning parse phase...")
 
     branches = find_all_branches_in_mainline_containing_path(mainline, repo)
-    # we need to do this as the function above won't find mainline under its
-    # path with the trailing '/'
-    branches.append(mainline)
 
     # NOTE how we're passing branches, not branch.  this is to detect deleted files.
     filesToWalk = find_all_files_in_branches_under_path(mainline, branches, repo)
@@ -413,10 +448,8 @@ def cmd_parse(mainline, repo, database):
             versions = find_all_file_versions(mainline, branch, fullPathWalk)
             #sys.stderr.write("\n[*] \t\tversions = %s" % versions)
             for timestamp, action, origPath, version, author, comment, data in versions:
-                # TODO American date formats are not the only time format. This should be configurable
-                epoch = int(time.mktime(time.strptime(timestamp, "%d/%m/%Y %H:%M")))
                 # branch operations don't follow the actionMap
-                if action == "add to branch":
+                if action == SSCMFileAction.AddToBranch:
                     if is_snapshot_branch(data, pathWalk):
                         branchAction = Actions.BRANCH_SNAPSHOT
                     else:
@@ -426,17 +459,17 @@ def cmd_parse(mainline, repo, database):
                     # string for origPath (its irrelevant in the export phase for this action) and set the version
                     # to one. We cant use None/NULL for these values as SQLITE doesnt consider NULL==NULL as a true
                     # statement.
-                    add_record_to_database(DatabaseRecord((epoch, branchAction, mainline, branch, repo, "NULL", 1, author, comment, data, repo)), database)
+                    add_record_to_database(DatabaseRecord((timestamp, branchAction, mainline, branch, repo, "NULL", 1, author, comment, data, repo)), database)
                 else:
                     origFullPath = None
                     if origPath:
-                        if action == "renamed":
+                        if action == SSCMFileAction.FileRenamed:
                             origFullPath = str(pathWalk / origPath)
                             data = str(pathWalk / data)
-                        elif action == "moved":
+                        elif action == SSCMFileAction.FileMoved:
                             origFullPath = str(origPath / fileWalk)
                             data = str(data / fileWalk)
-                    add_record_to_database(DatabaseRecord((epoch, actionMap[action], mainline, branch, str(fullPathWalk), origFullPath, version, author, comment, data, repo)), database)
+                    add_record_to_database(DatabaseRecord((timestamp, actionMap[action], mainline, branch, str(fullPathWalk), origFullPath, version, author, comment, data, repo)), database)
 
     sys.stderr.write("\n[+] Parse phase complete")
 
@@ -491,7 +524,7 @@ def print_blob_for_file(branch, fullPath, timestamp=None):
     global mark
 
     time_struct = time.localtime(timestamp)
-    time_string = time.strftime("%Y%m%d%H:%M:59", time_struct)
+    time_string = time.strftime("%Y%m%d%H:%M:%S", time_struct)
 
     path, file = os.path.split(fullPath)
     localPath = os.path.join(scratchDir, file)
@@ -754,6 +787,12 @@ def handle_command(parser):
         username = args.username[0]
         password = args.password[0]
 
+    if args.host and args.port:
+        global host
+        global port
+        host = args.host[0]
+        port = args.port[0]
+
     if args.command == "parse" and args.mainline and args.path:
         verify_surround_environment()
         database = create_database()
@@ -779,6 +818,7 @@ def handle_command(parser):
 
 
 def parse_arguments():
+    # TODO: fixup args to have required args
     parser = argparse.ArgumentParser(prog='export-surround-to-git.py', description='Exports history from Seapine Surround in a format parsable by `git fast-import`.', formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('-m', '--mainline', nargs=1, help='Mainline branch containing history to export')
     parser.add_argument('-p', '--path', nargs=1, help='Path containing history to export')
@@ -786,6 +826,8 @@ def parse_arguments():
     parser.add_argument('-u', '--username', nargs=1, help='Username for the scm server')
     parser.add_argument('-pw', '--password', nargs=1, help='Password for the scm server')
     parser.add_argument('-i', '--install', nargs=1, help='Full path to sscm executable')
+    parser.add_argument('-ho', '--host', nargs=1, help='Surround SCM server host address')
+    parser.add_argument('-po', '--port', nargs=1, help='Surround SCM server port number')
     parser.add_argument('--version', action='version', version='%(prog)s ' + VERSION)
     parser.add_argument('command', nargs='?', default='all')
     parser.epilog = "Example flow:\n\tsscm setclient ...\n\tgit init my-new-repo\n\tcd my-new-repo\n\texport-surround-to-git.py -m Sandbox -p \"Sandbox/Merge Test\" -f blah.txt | git fast-import --stats --export-marks=marks.txt\n\t...\n\tgit repack ..."

@@ -1,6 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include "sscmapi.h"
+#include <sscmapi.h>
 
 int main(int argc, char *argv[])
 {
@@ -32,11 +32,11 @@ int main(int argc, char *argv[])
     SSCMResult result = sscm_connect(pHost, port, pUsername, pPassword, &context);
     if (result != SSCM_API_OK) {
         char *pError = sscm_get_last_error(result);
-        printf("sscm_connect failed: %s\n", pError);
+        fprintf(stderr, "sscm_connect failed: %s\n", pError);
         sscm_free_string(pError);
         goto END;
     }
-    
+
     result = sscm_file_history(&context,
                                pRepo,
                                pFile,
@@ -47,27 +47,23 @@ int main(int argc, char *argv[])
                                &numOfHistoryItems);
     if (result != SSCM_API_OK) {
         char *pError = sscm_get_last_error(result);
-        printf("sscm_file_history failed: %s\n", pError);
+        fprintf(stderr, "sscm_file_history failed: %s\n", pError);
         sscm_free_string(pError);
         goto END;
-    }
-    
-    if (version == 0) {
-        printf("version\tdate\taction\tactionBranch\tactionVersion\tusername\n");
     }
 
     for (int i = 0; i < numOfHistoryItems; i++) {
         if (version == 0 || ppItems[i]->version == version) {
-            printf("%u\t%u\t%d\t%s\t%u\t%s\n",
-                   ppItems[i]->version,
-                   (unsigned int) ppItems[i]->date,
-                   ppItems[i]->action,
-                   ppItems[i]->pActionBranch,
-                   ppItems[i]->actionVersion,
-                   ppItems[i]->pUsername);
+            printf("%u\n", ppItems[i]->version);
+            printf("%u\n", (unsigned int) ppItems[i]->date);
+            printf("%d\n", ppItems[i]->action);
+            printf("%s\n", ppItems[i]->pActionBranch);
+            printf("%s\n", ppItems[i]->pUsername);
+            printf("%s\n", ppItems[i]->pComment);
+            printf("--END_COMMENT--\n\n");
         }
     }
-    
+
     ret = 0;
 
 END:
