@@ -65,7 +65,7 @@ import shutil
 #
 
 # temp directory in cwd, holds files fetched from Surround
-scratchDir = "scratch"
+scratchDir = (pathlib.Path.cwd() / "scratch")
 
 # for efficiency, compile the history regex once beforehand
 # TODO timestamp should match times more explicitly but I want to ensure timestamps are always printed the sameway from sscm
@@ -143,7 +143,6 @@ class SSCMFileAction:
 actionMap = {
     SSCMFileAction.AllActions                       : None,
     SSCMFileAction.AddToRepository                  : Actions.FILE_MODIFY,
-    SSCMFileAction.AddToBranch                      : None,
     SSCMFileAction.AddToBranch                      : Actions.FILE_MODIFY, # This doesn't feel like a modify. TODO investigate
     SSCMFileAction.AddFromBranch                    : Actions.FILE_MODIFY,
     SSCMFileAction.CheckIn                          : Actions.FILE_MODIFY,
@@ -526,31 +525,35 @@ def print_blob_for_file(branch, fullPath, timestamp=None):
     time_struct = time.localtime(timestamp)
     time_string = time.strftime("%Y%m%d%H:%M:%S", time_struct)
 
-    path, file = os.path.split(fullPath)
-    localPath = os.path.join(scratchDir, file)
-    if os.path.isfile(localPath):
-        os.remove(localPath)
+    path = fullPath.parent
+    file = fullPath.name
+    localPath = scratchDir / file
+    if localPath.is_file():
+        localPath.unlink()
     if timestamp:
         # get specified version. You would think the -v option would get the
         # version of the file you want, but this does not work for deleted files.
         # we need to use the time stamp with -s
-        cmd = sscm + ' get "%s" -b"%s" -p"%s" -d"%s" -f -i -s"%s" -e ' % (file, branch, path, scratchDir, time_string)
+        cmd = sscm + ' get "%s" -b"%s" -p"%s" -d"%s" -f -i -s"%s" -e ' % (file, branch, path, scratchDir.name, time_string)
         if username and password:
             cmd = cmd + '-y"%s":"%s" ' % (username, password)
     else:
         # get newest version
-        cmd = sscm + ' get "%s" -b"%s" -p"%s" -d"%s" -f -i -e ' % (file, branch, path, scratchDir)
+        cmd = sscm + ' get "%s" -b"%s" -p"%s" -d"%s" -f -i -e ' % (file, branch, path, scratchDir.name)
         if username and password:
             cmd = cmd + '-y"%s":"%s" ' % (username, password)
     with open(os.devnull, 'w') as fnull:
         subprocess.Popen(cmd, shell=True, stdout=fnull, stderr=fnull).communicate()
+
+    if not localPath.is_file():
+        raise Exception("File %s from branch %s could not be downloaded with timestamp %s" % (fullPath, branch, time_string))
 
     # git fast-import is very particular about the format of the blob command.
     # The data must be given in raw bytes for it to parse the files correctly.
     mark = mark + 1
     sys.stdout.buffer.write(b'blob\n')
     sys.stdout.buffer.write(b'mark :%d\n' % mark)
-    line = open(localPath, 'rb').read()
+    line = localPath.read_bytes()
     sys.stdout.buffer.write(b'data %d\n' % len(line))
     sys.stdout.buffer.write(line)
     sys.stdout.buffer.write(b'\n')
@@ -666,7 +669,7 @@ def process_database_record_group(c):
 
         for record in normal_records:
             if record.action == Actions.FILE_MODIFY:
-                    blob_mark = print_blob_for_file(record.branch, record.path, record.timestamp)
+                    blob_mark = print_blob_for_file(record.branch, pathlib.PurePosixPath(record.path), record.timestamp)
                     record.set_blob_mark(blob_mark)
             if record.comment:
                 if record.comment not in unique_comments:
