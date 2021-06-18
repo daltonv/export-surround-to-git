@@ -699,8 +699,9 @@ def process_database_record_group(c):
                     for file in files:
                         full_comment += "- %s\n" % file
                     full_comment += "\n"
-            sys.stdout.buffer.write(b"data %d\n" % len(full_comment))
-            sys.stdout.buffer.write(full_comment.encode("utf-8"))
+            encoded_comment = full_comment.encode("utf-8")
+            sys.stdout.buffer.write(b"data %d\n" % len(encoded_comment))
+            sys.stdout.buffer.write(encoded_comment)
         else:
             sys.stdout.buffer.write(b"data 0\n")
 
