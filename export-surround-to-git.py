@@ -550,7 +550,13 @@ def print_blob_for_file(branch, fullPath, timestamp=None):
         subprocess.Popen(cmd, shell=True, stdout=fnull, stderr=fnull).communicate()
 
     if not localPath.is_file():
-        raise Exception("File %s from branch %s could not be downloaded with timestamp %s" % (fullPath, branch, time_string))
+        sys.stderr.write("\n[+] Failed to download file %s from branch %s. Trying again...\n" % (fullPath, branch))
+        time.sleep(3)
+        with open(os.devnull, 'w') as fnull:
+            subprocess.Popen(cmd, shell=True, stdout=fnull, stderr=fnull).communicate()
+
+        if not localPath.is_file():
+            raise Exception("File %s from branch %s could not be downloaded with timestamp %s\ncmd = %s" % (fullPath, branch, time_string, cmd))
 
     # git fast-import is very particular about the format of the blob command.
     # The data must be given in raw bytes for it to parse the files correctly.
