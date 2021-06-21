@@ -571,7 +571,7 @@ def print_blob_for_file(branch, fullPath, timestamp=None):
     return mark
 
 
-def process_database_record_group(c):
+def process_database_record_group(c, email_domain = None):
     global mark
 
     # will contain a list of the MODIFY, DELETE, and RENAME records in this
@@ -604,9 +604,13 @@ def process_database_record_group(c):
             mark = mark + 1
             sys.stdout.buffer.write(b"commit TAG_FIXUP\n")
             sys.stdout.buffer.write(b"mark :%d\n" % mark)
-            # we don't have the legit email addresses, so we just use the author as the email address
-            sys.stdout.buffer.write(("author %s <%s> %s %s\n" % (record.author, record.author, record.timestamp, timezone)).encode("utf-8"))
-            sys.stdout.buffer.write(("committer %s <%s> %s %s\n" % (record.author, record.author, record.timestamp, timezone)).encode("utf-8"))
+            email = ""
+            if email_domain:
+                email = record.author + "@" + email_domain
+            else:
+                email = record.author
+            sys.stdout.buffer.write(("author %s <%s> %s %s\n" % (record.author, email, record.timestamp, timezone)).encode("utf-8"))
+            sys.stdout.buffer.write(("committer %s <%s> %s %s\n" % (record.author, email, record.timestamp, timezone)).encode("utf-8"))
             if record.comment:
                 comment = record.comment.encode("utf-8")
                 sys.stdout.buffer.write(b"data %d\n" % len(comment))
@@ -692,8 +696,13 @@ def process_database_record_group(c):
             branch = "master"
         sys.stdout.buffer.write(("commit refs/heads/%s\n" % translate_branch_name(branch)).encode("utf-8"))
         sys.stdout.buffer.write(("mark :%d\n" % mark).encode("utf-8"))
-        sys.stdout.buffer.write(("author %s <%s> %s %s\n" % (normal_records[0].author, normal_records[0].author, normal_records[0].timestamp, timezone)).encode("utf-8"))
-        sys.stdout.buffer.write(("committer %s <%s> %s %s\n" % (normal_records[0].author, normal_records[0].author, normal_records[0].timestamp, timezone)).encode("utf-8"))
+        email = ""
+        if email_domain:
+            email = normal_records[0].author + "@" + email_domain
+        else:
+            email = normal_records[0].author
+        sys.stdout.buffer.write(("author %s <%s> %s %s\n" % (normal_records[0].author, email, normal_records[0].timestamp, timezone)).encode("utf-8"))
+        sys.stdout.buffer.write(("committer %s <%s> %s %s\n" % (normal_records[0].author, email, normal_records[0].timestamp, timezone)).encode("utf-8"))
         if len(unique_comments):
             full_comment = ""
             for comment, files in unique_comments.items():
@@ -743,7 +752,7 @@ def process_database_record_group(c):
         sys.stdout.flush()
 
 
-def cmd_export(database):
+def cmd_export(database, email_domain = None):
     sys.stderr.write("\n[+] Beginning export phase...\n")
 
     if not os.path.exists(scratchDir):
@@ -762,7 +771,7 @@ def cmd_export(database):
     records_group = []
     while record := c1.fetchone():
         c2.execute("SELECT * FROM operations WHERE timestamp == %d AND branch == '%s' ORDER BY action ASC" % (record[0], record[1]))
-        process_database_record_group(c2)
+        process_database_record_group(c2, email_domain)
         count = count + 1
         # print progress every 5 operations
         if count % 5 == 0 and record:
@@ -814,13 +823,13 @@ def handle_command(parser):
     elif args.command == "export" and args.database:
         verify_surround_environment()
         database = sqlite3.connect(args.database[0])
-        cmd_export(database)
+        cmd_export(database, args.email)
     elif args.command == "all" and args.mainline and args.path:
         # typical case
         verify_surround_environment()
         database = create_database()
         cmd_parse(args.mainline[0], args.path[0], database)
-        cmd_export(database)
+        cmd_export(database, args.email)
     elif args.command == "verify" and args.mainline and args.path:
         # the 'verify' operation must take place after the export has completed.
         # as such, it will always be conducted as its own separate operation.
@@ -842,6 +851,7 @@ def parse_arguments():
     parser.add_argument('-i', '--install', nargs=1, help='Full path to sscm executable')
     parser.add_argument('-ho', '--host', nargs=1, help='Surround SCM server host address')
     parser.add_argument('-po', '--port', nargs=1, help='Surround SCM server port number')
+    parser.add_argument('--email', help='Domain for the email address')
     parser.add_argument('--version', action='version', version='%(prog)s ' + VERSION)
     parser.add_argument('command', nargs='?', default='all')
     parser.epilog = "Example flow:\n\tsscm setclient ...\n\tgit init my-new-repo\n\tcd my-new-repo\n\texport-surround-to-git.py -m Sandbox -p \"Sandbox/Merge Test\" -f blah.txt | git fast-import --stats --export-marks=marks.txt\n\t...\n\tgit repack ..."
