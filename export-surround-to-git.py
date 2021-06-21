@@ -724,17 +724,17 @@ def process_database_record_group(c):
             if record.action == Actions.FILE_MODIFY:
                 if record.origPath and record.origPath != "NULL":
                     # looks like there was a previous rename.  use the original name.
-                    sys.stdout.buffer.write(("M 100644 :%d %s\n" % (record.blob_mark, origPath)).encode("utf-8"))
+                    sys.stdout.buffer.write(('M 100644 :%d "%s"\n' % (record.blob_mark, origPath)).encode("utf-8"))
                 else:
                     # no previous rename.  good to use the current name.
-                    sys.stdout.buffer.write(("M 100644 :%d %s\n" % (record.blob_mark, path)).encode("utf-8"))
+                    sys.stdout.buffer.write(('M 100644 :%d "%s"\n' % (record.blob_mark, path)).encode("utf-8"))
             elif record.action == Actions.FILE_DELETE:
-                sys.stdout.buffer.write(("D %s\n" % path).encode("utf-8"))
+                sys.stdout.buffer.write(('D "%s"\n' % path).encode("utf-8"))
             elif record.action == Actions.FILE_RENAME:
                 # NOTE we're not using record.path here, as there may have been multiple renames in the file's history
                 full_data_path = pathlib.PurePosixPath(record.data)
                 data = full_data_path.relative_to(repo)
-                sys.stdout.buffer.write(("R %s %s\n" % (origPath, data)).encode("utf-8"))
+                sys.stdout.buffer.write(('R "%s" "%s"\n' % (origPath, data)).encode("utf-8"))
             else:
                 raise Exception("Unknown record action")
 
