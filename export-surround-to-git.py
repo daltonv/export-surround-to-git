@@ -249,27 +249,29 @@ def find_all_branches_in_mainline_containing_path(mainline, path):
     # NOTE: don't use '-f' with this command, as it really restricts overall usage.
     branches = get_lines_from_sscm_cmd(cmd)
 
-    our_branches = []
+    our_branches = {}
     # Parse the branches and find the branches in the path provided
     for branch in branches:
         if branch.startswith(str(path)):
             # Since the branch currently shows the full path we need to get the
             # the branch name by getting only the last element in the path
-            match = re.search(r'(.+\/([^\/]+))\s\<.+>\s\((baseline|mainline|snapshot)\)', branch)
+            match = re.search(r'(.+\/([^\/]+))\s\<(.+)>\s\((baseline|mainline|snapshot)\)', branch)
             found_branch = pathlib.PurePosixPath(match.group(1))
             if str(found_branch).startswith((str(path) + '/')) or found_branch == path:
-                our_branches.append(found_branch.name)
+                branch_repo = pathlib.PurePosixPath(match.group(3))
+                if str(branch_repo).startswith((str(path) + '/')) or branch_repo == path:
+                    our_branches[found_branch.name] = branch_repo
 
     return our_branches
 
 
-def find_all_files_in_branches_under_path(mainline, branches, path):
+def find_all_files_in_branches_under_path(branches):
     fileSet = set()
     for branch in branches:
         sys.stderr.write("\n[*] Looking for files in branch '%s' ..." % branch)
 
         # use all lines from `ls` except for a few
-        cmd = sscm + ' ls -b"%s" -p"%s" -r ' % (branch, path)
+        cmd = sscm + ' ls -b"%s" -p"%s" -r ' % (branch, branches[branch])
         if username and password:
             cmd = cmd + '-y"%s":"%s" ' % (username, password)
         #cmd = cmd + '| grep -v \'Total listed files\' | sed -r \'s/unknown status.*$//g\''
@@ -433,7 +435,7 @@ def cmd_parse(mainline, path, database):
     branches = find_all_branches_in_mainline_containing_path(mainline, repo)
 
     # NOTE how we're passing branches, not branch.  this is to detect deleted files.
-    filesToWalk = find_all_files_in_branches_under_path(mainline, branches, repo)
+    filesToWalk = find_all_files_in_branches_under_path(branches)
 
     for branch in branches:
         # Skip snapshot branches
@@ -457,12 +459,21 @@ def cmd_parse(mainline, path, database):
                         branchAction = Actions.BRANCH_SNAPSHOT
                     else:
                         branchAction = Actions.BRANCH_BASELINE
+
+                    # Some branch actions occur on deleted branches. In that case
+                    # the branch won't appear in branches list. We will just treat
+                    # the path as the repo path in this case. # TODO handle deleted
+                    # branches better
+                    if data in branches:
+                        branch_path = str(branches[data])
+                    else:
+                        branch_path = str(repo)
                     # each add to branch command happens once for a new branch, but will show up on each file
                     # that is a part of the branch added too. To ensure there are no duplicates use an empty
                     # string for origPath (its irrelevant in the export phase for this action) and set the version
                     # to one. We cant use None/NULL for these values as SQLITE doesnt consider NULL==NULL as a true
                     # statement.
-                    add_record_to_database(DatabaseRecord((timestamp, branchAction, mainline, branch, str(repo), "NULL", 1, author, comment, data, str(repo))), database)
+                    add_record_to_database(DatabaseRecord((timestamp, branchAction, mainline, branch, branch_path, "NULL", 1, author, comment, data, str(repo))), database)
                 else:
                     origFullPath = None
                     if origPath:
@@ -593,7 +604,9 @@ def process_database_record_group(c, email_domain = None):
             sys.stdout.buffer.write(("from refs/heads/%s\n" % translate_branch_name(parentBranch)).encode("utf-8"))
 
             # get all files contained within snapshot
-            files = find_all_files_in_branches_under_path(record.mainline, [record.data], record.path)
+            branches_dict = {}
+            branches_dict[record.data] = record.path
+            files = find_all_files_in_branches_under_path(branches_dict)
             startMark = None
             for file in files:
                 blobMark = print_blob_for_file(record.data, file)
