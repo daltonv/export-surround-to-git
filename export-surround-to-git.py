@@ -64,25 +64,12 @@ import shutil
 # globals
 #
 
-# temp directory in cwd, holds files fetched from Surround
-scratchDir = (pathlib.Path.cwd() / "scratch")
-
-# for efficiency, compile the history regex once beforehand
-# TODO timestamp should match times more explicitly but I want to ensure timestamps are always printed the sameway from sscm
-histRegex = re.compile(r"^(?P<action>[\w]+([^\[\]\r\n]*[\w]+)?)(\[(?P<data>[^\[\]\r\n]*?)( v\. [\d]+)?\]| from \[(?P<from>[^\[\]\r\n]*)\] to \[(?P<to>[^\[\]\r\n]*)\])?([\s]+)(?P<author>[\w]+([^\[\]\r\n]*[\w]+)?)([\s]+)(?P<version>[\d]+)([\s]+)(?P<timestamp>\d\d\/[^\[\]\r\n]*)$", re.MULTILINE | re.DOTALL)
-
 # global "mark" number.  incremented before used, as 1 is minimum value allowed.
 mark = 0
 
 # local time zone
 # TODO how detect this?  right now we assume EST.
 timezone = "-0500"
-
-sscm = "sscm"
-username = ""
-password = ""
-host = ""
-port = ""
 
 # keeps track of snapshot name --> mark number pairing
 tagDict = {}
@@ -214,10 +201,19 @@ class DatabaseRecord:
     def get_tuple(self):
         return (self.timestamp, self.action, self.mainline, self.branch, self.path, self.origPath, self.version, self.author, self.comment, self.data, self.repo)
 
+# Hold all the info we need to run sscm
+class SSCM:
+    def __init__(self, exe, host, port, username, password):
+        self.exe = exe
+        self.host = host
+        self.port = port
+        self.username = username
+        self.password = password
 
-def verify_surround_environment():
+
+def verify_surround_environment(sscm):
     # verify we have sscm client installed and in PATH
-    cmd = sscm + " version"
+    cmd = sscm.exe + " version"
     with open(os.devnull, 'w') as fnull:
         p = subprocess.Popen(cmd, shell=True, stdout=fnull, stderr=fnull)
         p.communicate()
@@ -235,12 +231,12 @@ def get_lines_from_sscm_cmd(sscm_cmd):
     return lines, stderrdata
 
 
-def find_all_branches_in_mainline_containing_path(mainline, path):
+def find_all_branches_in_mainline_containing_path(mainline, path, sscm):
     # use the -o command on lsbranch to get a full path definition of each
     # branch. This will help us parse later
-    cmd = sscm + ' lsbranch -b"%s" -p"%s" -o ' % (mainline, path)
-    if username and password:
-        cmd = cmd + '-y"%s":"%s" ' % (username, password)
+    cmd = sscm.exe + ' lsbranch -b"%s" -p"%s" -o ' % (mainline, path)
+    if sscm.username and sscm.password:
+        cmd = cmd + '-y"%s":"%s" ' % (sscm.username, sscm.password)
 
     # FTODO this command yields branches that don't include the path specified.
     # we can however filter out the branches by using the -o option to print
@@ -267,15 +263,15 @@ def find_all_branches_in_mainline_containing_path(mainline, path):
     return our_branches
 
 
-def find_all_files_in_branches_under_path(branches):
+def find_all_files_in_branches_under_path(branches, sscm):
     fileSet = set()
     for branch in branches:
         sys.stderr.write("[*] Looking for files in branch '%s' ...\n" % branch)
 
         # use all lines from `ls` except for a few
-        cmd = sscm + ' ls -b"%s" -p"%s" -r ' % (branch, branches[branch])
-        if username and password:
-            cmd = cmd + '-y"%s":"%s" ' % (username, password)
+        cmd = sscm.exe + ' ls -b"%s" -p"%s" -r ' % (branch, branches[branch])
+        if sscm.username and sscm.password:
+            cmd = cmd + '-y"%s":"%s" ' % (sscm.username, sscm.password)
         #cmd = cmd + '| grep -v \'Total listed files\' | sed -r \'s/unknown status.*$//g\''
         # TODO why were they only looking for files with unkown status
         lines, stderrdata = get_lines_from_sscm_cmd(cmd)
@@ -307,20 +303,20 @@ def find_all_files_in_branches_under_path(branches):
     return fileSet
 
 
-def is_snapshot_branch(branch, repo):
+def is_snapshot_branch(branch, repo, sscm):
     # TODO can we eliminate 'repo' as an argument to this function?
-    cmd = sscm + ' branchproperty -b"%s" -p"%s" ' % (branch, repo)
-    if username and password:
-            cmd = cmd + '-y"%s":"%s" ' % (username, password)
+    cmd = sscm.exe + ' branchproperty -b"%s" -p"%s" ' % (branch, repo)
+    if sscm.username and sscm.password:
+            cmd = cmd + '-y"%s":"%s" ' % (sscm.username, sscm.password)
     with open(os.devnull, 'w') as fnull:
         result = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=fnull).communicate()[0].decode("utf8")
     return result.find("snapshot") != -1
 
 
-def get_file_rename(version, file, repo, branch):
-    cmd = sscm + ' history "%s" -b"%s" -p"%s" -v"%d:%d" ' % (file, branch, repo, version, version)
-    if username and password:
-        cmd += '-y"%s":"%s" ' % (username, password)
+def get_file_rename(version, file, repo, branch, sscm):
+    cmd = sscm.exe + ' history "%s" -b"%s" -p"%s" -v"%d:%d" ' % (file, branch, repo, version, version)
+    if sscm.username and sscm.password:
+        cmd += '-y"%s":"%s" ' % (sscm.username, sscm.password)
 
     old = None
     new = None
@@ -345,7 +341,7 @@ def get_file_rename(version, file, repo, branch):
     return (old, new)
 
 
-def find_all_file_versions(mainline, branch, path):
+def find_all_file_versions(mainline, branch, path, sscm):
     repo = path.parent
     file = path.name
     # The sscm history command is too difficult to parse corerectly so here we
@@ -354,9 +350,9 @@ def find_all_file_versions(mainline, branch, path):
     if not sscmhist.exists():
         raise Exception("sscmhist does not exit. Try compiling it")
 
-    cmd = str(sscmhist) + ' %s %s ' % (host, port)
-    if username and password:
-        cmd += '%s %s ' % (username, password)
+    cmd = str(sscmhist) + ' %s %s ' % (sscm.host, sscm.port)
+    if sscm.username and sscm.password:
+        cmd += '%s %s ' % (sscm.username, sscm.password)
     else:
         # TODO handle this better
         cmd += 'NULL NULL '
@@ -400,7 +396,7 @@ def find_all_file_versions(mainline, branch, path):
             # that calls 'sscm history'. Finding just the rename info is
             # relatively safe by parsing the output with regex.
             if action == SSCMFileAction.FileMoved or action == SSCMFileAction.FileRenamed:
-                (oldName, newName) = get_file_rename(version , file, repo, branch)
+                (oldName, newName) = get_file_rename(version , file, repo, branch, sscm)
                 data = pathlib.PurePosixPath(newName)
                 origFile = pathlib.PurePosixPath(oldName)
 
@@ -440,19 +436,19 @@ def add_record_to_database(record, database):
         database.commit()
 
 
-def cmd_parse(mainline, path, database):
+def cmd_parse(mainline, path, database, sscm):
     sys.stderr.write("[+] Beginning parse phase...\n")
 
     repo = pathlib.PurePosixPath(path)
 
-    branches = find_all_branches_in_mainline_containing_path(mainline, repo)
+    branches = find_all_branches_in_mainline_containing_path(mainline, repo, sscm)
 
     # NOTE how we're passing branches, not branch.  this is to detect deleted files.
-    filesToWalk = find_all_files_in_branches_under_path(branches)
+    filesToWalk = find_all_files_in_branches_under_path(branches, sscm)
 
     for branch in branches:
         # Skip snapshot branches
-        if is_snapshot_branch(branch, repo):
+        if is_snapshot_branch(branch, repo, sscm):
             continue
 
         sys.stderr.write("[*] Parsing branch '%s' ...\n" % branch)
@@ -463,12 +459,12 @@ def cmd_parse(mainline, path, database):
             pathWalk = fullPathWalk.parent
             fileWalk = fullPathWalk.name
 
-            versions = find_all_file_versions(mainline, branch, fullPathWalk)
+            versions = find_all_file_versions(mainline, branch, fullPathWalk, sscm)
             #sys.stderr.write("\n[*] \t\tversions = %s" % versions)
             for timestamp, action, origPath, version, author, comment, data in versions:
                 # branch operations don't follow the actionMap
                 if action == SSCMFileAction.AddToBranch:
-                    if is_snapshot_branch(data, pathWalk):
+                    if is_snapshot_branch(data, pathWalk, sscm):
                         branchAction = Actions.BRANCH_SNAPSHOT
                     else:
                         branchAction = Actions.BRANCH_BASELINE
@@ -547,7 +543,7 @@ def translate_branch_name(name):
 
 
 # this is the function that prints most file data to the stream
-def print_blob_for_file(branch, fullPath, timestamp=None):
+def print_blob_for_file(branch, fullPath, sscm, scratchDir, timestamp=None):
     global mark
 
     time_struct = time.localtime(timestamp)
@@ -562,14 +558,14 @@ def print_blob_for_file(branch, fullPath, timestamp=None):
         # get specified version. You would think the -v option would get the
         # version of the file you want, but this does not work for deleted files.
         # we need to use the time stamp with -s
-        cmd = sscm + ' get "%s" -b"%s" -p"%s" -d"%s" -f -i -s"%s" -e ' % (file, branch, path, scratchDir.name, time_string)
-        if username and password:
-            cmd = cmd + '-y"%s":"%s" ' % (username, password)
+        cmd = sscm.exe + ' get "%s" -b"%s" -p"%s" -d"%s" -f -i -s"%s" -e ' % (file, branch, path, scratchDir.name, time_string)
+        if sscm.username and sscm.password:
+            cmd = cmd + '-y"%s":"%s" ' % (sscm.username, sscm.password)
     else:
         # get newest version
-        cmd = sscm + ' get "%s" -b"%s" -p"%s" -d"%s" -f -i -e ' % (file, branch, path, scratchDir.name)
-        if username and password:
-            cmd = cmd + '-y"%s":"%s" ' % (username, password)
+        cmd = sscm.exe + ' get "%s" -b"%s" -p"%s" -d"%s" -f -i -e ' % (file, branch, path, scratchDir.name)
+        if sscm.username and sscm.password:
+            cmd = cmd + '-y"%s":"%s" ' % (sscm.username, sscm.password)
     with open(os.devnull, 'w') as fnull:
         subprocess.Popen(cmd, shell=True, stdout=fnull, stderr=fnull).communicate()
 
@@ -595,13 +591,13 @@ def print_blob_for_file(branch, fullPath, timestamp=None):
     return mark
 
 
-def process_combined_commit(record_group, email_domain = None, merge = False):
+def process_combined_commit(record_group, sscm, email_domain, scratchDir, merge = False):
     global mark
     unique_comments = {}
 
     for record in record_group:
         if record.action == Actions.FILE_MODIFY or record.action == Actions.FILE_MERGE:
-                blob_mark = print_blob_for_file(record.branch, pathlib.PurePosixPath(record.path), record.timestamp)
+                blob_mark = print_blob_for_file(record.branch, pathlib.PurePosixPath(record.path), sscm, scratchDir, record.timestamp)
                 record.set_blob_mark(blob_mark)
         if record.comment:
             if record.comment not in unique_comments:
@@ -676,7 +672,7 @@ def process_combined_commit(record_group, email_domain = None, merge = False):
     sys.stdout.flush()
 
 
-def process_database_record_group(c, email_domain = None):
+def process_database_record_group(c, sscm, scratchDir, email_domain = None):
     global mark
 
     # will contain a list of the MODIFY, DELETE, and RENAME records in this
@@ -706,10 +702,10 @@ def process_database_record_group(c, email_domain = None):
             # get all files contained within snapshot
             branches_dict = {}
             branches_dict[record.data] = record.path
-            files = find_all_files_in_branches_under_path(branches_dict)
+            files = find_all_files_in_branches_under_path(branches_dict, sscm)
             startMark = None
             for file in files:
-                blobMark = print_blob_for_file(record.data, file)
+                blobMark = print_blob_for_file(record.data, file, sscm, scratchDir)
                 if not startMark:
                     # keep track of what mark represents the start of this snapshot data
                     startMark = blobMark
@@ -768,7 +764,7 @@ def process_database_record_group(c, email_domain = None):
             if record.branch == record.mainline:
                 parentBranch = "master"
             parentBranch = translate_branch_name(parentBranch)
-            if is_snapshot_branch(parentBranch, os.path.split(record.path)[0]):
+            if is_snapshot_branch(parentBranch, os.path.split(record.path)[0], sscm):
                 # Git won't let us refer to the tag directly (maybe this will be fixed in a future version).
                 # for now, we have to refer to the associated tag mark instead.
                 # (if this is fixed in the future, we can get rid of tagDict altogether)
@@ -797,14 +793,17 @@ def process_database_record_group(c, email_domain = None):
 
     # Here we are going to combine all the record groups into a single commits
     if len(normal_records):
-        process_combined_commit(normal_records, email_domain, False)
+        process_combined_commit(normal_records, sscm, email_domain, scratchDir, False)
 
     for merge in merge_records:
-        process_combined_commit(merge_records[merge], email_domain, True)
+        process_combined_commit(merge_records[merge], sscm, email_domain, scratchDir, True)
 
 
-def cmd_export(database, email_domain = None):
+def cmd_export(database, email_domain, sscm):
     sys.stderr.write("[+] Beginning export phase...\n")
+
+    # temp directory in cwd, holds files fetched from Surround
+    scratchDir = (pathlib.Path.cwd() / "scratch")
 
     if not os.path.exists(scratchDir):
         os.mkdir(scratchDir)
@@ -822,7 +821,7 @@ def cmd_export(database, email_domain = None):
     records_group = []
     while record := c1.fetchone():
         c2.execute("SELECT * FROM operations WHERE timestamp == %d AND branch == '%s' ORDER BY action ASC" % (record[0], record[1]))
-        process_database_record_group(c2, email_domain)
+        process_database_record_group(c2, sscm, scratchDir, email_domain)
         count = count + 1
         # print progress every 5 operations
         if count % 5 == 0 and record:
@@ -851,40 +850,26 @@ def cmd_verify(mainline, path):
 def handle_command(parser):
     args = parser.parse_args()
 
-    if args.install:
-        global sscm
-        sscm = args.install
-
-    if args.username and args.password:
-        global username
-        global password
-        username = args.username
-        password = args.password
-
-    if args.host and args.port:
-        global host
-        global port
-        host = args.host
-        port = args.port
+    sscm = SSCM(args.install, args.host, args.port, args.username, args.password)
 
     if args.command == "parse" and args.mainline and args.path:
-        verify_surround_environment()
+        verify_surround_environment(sscm)
         database = create_database()
-        cmd_parse(args.mainline, args.path, database)
+        cmd_parse(args.mainline, args.path, database, sscm)
     elif args.command == "export" and args.database:
-        verify_surround_environment()
+        verify_surround_environment(sscm)
         database = sqlite3.connect(args.database)
-        cmd_export(database, args.email)
+        cmd_export(database, args.email, sscm)
     elif args.command == "all" and args.mainline and args.path:
         # typical case
-        verify_surround_environment()
+        verify_surround_environment(sscm)
         database = create_database()
-        cmd_parse(args.mainline, args.path, database)
-        cmd_export(database, args.email)
+        cmd_parse(args.mainline, args.path, database, sscm)
+        cmd_export(database, args.email, sscm)
     elif args.command == "verify" and args.mainline and args.path:
         # the 'verify' operation must take place after the export has completed.
         # as such, it will always be conducted as its own separate operation.
-        verify_surround_environment()
+        verify_surround_environment(sscm)
         cmd_verify(args.mainline, args.path)
     else:
         parser.print_help()
@@ -898,7 +883,7 @@ def parse_arguments():
     parser.add_argument('-d', '--database', help='Path to local database (only used when resuming an export)')
     parser.add_argument('-u', '--username', help='Username for the scm server')
     parser.add_argument('-pw', '--password', help='Password for the scm server')
-    parser.add_argument('-i', '--install', help='Full path to sscm executable')
+    parser.add_argument('-i', '--install', default='sscm' ,help='Full path to sscm executable')
     parser.add_argument('-ho', '--host', help='Surround SCM server host address')
     parser.add_argument('-po', '--port', help='Surround SCM server port number')
     parser.add_argument('--email', help='Domain for the email address')
