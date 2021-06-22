@@ -841,55 +841,54 @@ def handle_command(parser):
 
     if args.install:
         global sscm
-        sscm = args.install[0]
+        sscm = args.install
 
     if args.username and args.password:
         global username
         global password
-        username = args.username[0]
-        password = args.password[0]
+        username = args.username
+        password = args.password
 
     if args.host and args.port:
         global host
         global port
-        host = args.host[0]
-        port = args.port[0]
+        host = args.host
+        port = args.port
 
     if args.command == "parse" and args.mainline and args.path:
         verify_surround_environment()
         database = create_database()
-        cmd_parse(args.mainline[0], args.path[0], database)
+        cmd_parse(args.mainline, args.path, database)
     elif args.command == "export" and args.database:
         verify_surround_environment()
-        database = sqlite3.connect(args.database[0])
+        database = sqlite3.connect(args.database)
         cmd_export(database, args.email)
     elif args.command == "all" and args.mainline and args.path:
         # typical case
         verify_surround_environment()
         database = create_database()
-        cmd_parse(args.mainline[0], args.path[0], database)
+        cmd_parse(args.mainline, args.path, database)
         cmd_export(database, args.email)
     elif args.command == "verify" and args.mainline and args.path:
         # the 'verify' operation must take place after the export has completed.
         # as such, it will always be conducted as its own separate operation.
         verify_surround_environment()
-        cmd_verify(args.mainline[0], args.path[0])
+        cmd_verify(args.mainline, args.path)
     else:
         parser.print_help()
         sys.exit(1)
 
 
 def parse_arguments():
-    # TODO: fixup args to have required args
     parser = argparse.ArgumentParser(prog='export-surround-to-git.py', description='Exports history from Seapine Surround in a format parsable by `git fast-import`.', formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('-m', '--mainline', nargs=1, help='Mainline branch containing history to export')
-    parser.add_argument('-p', '--path', nargs=1, help='Path containing history to export')
-    parser.add_argument('-d', '--database', nargs=1, help='Path to local database (only used when resuming an export)')
-    parser.add_argument('-u', '--username', nargs=1, help='Username for the scm server')
-    parser.add_argument('-pw', '--password', nargs=1, help='Password for the scm server')
-    parser.add_argument('-i', '--install', nargs=1, help='Full path to sscm executable')
-    parser.add_argument('-ho', '--host', nargs=1, help='Surround SCM server host address')
-    parser.add_argument('-po', '--port', nargs=1, help='Surround SCM server port number')
+    parser.add_argument('-m', '--mainline', help='Mainline branch containing history to export')
+    parser.add_argument('-p', '--path', help='Path containing history to export')
+    parser.add_argument('-d', '--database', help='Path to local database (only used when resuming an export)')
+    parser.add_argument('-u', '--username', help='Username for the scm server')
+    parser.add_argument('-pw', '--password', help='Password for the scm server')
+    parser.add_argument('-i', '--install', help='Full path to sscm executable')
+    parser.add_argument('-ho', '--host', help='Surround SCM server host address')
+    parser.add_argument('-po', '--port', help='Surround SCM server port number')
     parser.add_argument('--email', help='Domain for the email address')
     parser.add_argument('--version', action='version', version='%(prog)s ' + VERSION)
     parser.add_argument('command', nargs='?', default='all')
