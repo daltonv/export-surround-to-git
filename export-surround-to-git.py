@@ -94,6 +94,7 @@ class Actions:
     FILE_MODIFY = 3
     FILE_DELETE = 4
     FILE_RENAME = 5
+    FILE_MERGE = 6
 
 # similar to the SSCMFileAction enum from the API
 class SSCMFileAction:
@@ -152,9 +153,9 @@ actionMap = {
     SSCMFileAction.AttachToDefect                   : None,
     SSCMFileAction.Delete                           : Actions.FILE_DELETE,
     SSCMFileAction.Undelete                         : None,
-    SSCMFileAction.PromoteToBranch                  : Actions.FILE_MODIFY,
-    SSCMFileAction.PromoteFromBranchWithMerge       : Actions.FILE_MODIFY,
-    SSCMFileAction.PromoteFromBranchWithOutMerge    : Actions.FILE_MODIFY,
+    SSCMFileAction.PromoteToBranch                  : None,
+    SSCMFileAction.PromoteFromBranchWithMerge       : Actions.FILE_MERGE,
+    SSCMFileAction.PromoteFromBranchWithOutMerge    : Actions.FILE_MERGE,
     SSCMFileAction.Share                            : None,
     SSCMFileAction.BreakShare                       : None,
     SSCMFileAction.BranchRenamed                    : None,
@@ -423,7 +424,7 @@ def add_record_to_database(record, database):
     database.commit()
 
     if record.action == Actions.FILE_RENAME:
-        c.execute('''UPDATE operations SET origPath=? WHERE action=? AND mainline=? AND branch=? AND path=? AND (origPath IS NULL OR origPath='') AND version<=?''', (record.origPath, Actions.FILE_MODIFY, record.mainline, record.branch, record.path, record.version))
+        c.execute('''UPDATE operations SET origPath=? WHERE (action=? or action=?) AND mainline=? AND branch=? AND path=? AND (origPath IS NULL OR origPath='') AND version<=?''', (record.origPath, Actions.FILE_MODIFY, Actions.FILE_MERGE, record.mainline, record.branch, record.path, record.version))
         database.commit()
 
 
@@ -582,12 +583,99 @@ def print_blob_for_file(branch, fullPath, timestamp=None):
     return mark
 
 
+def process_combined_commit(record_group, email_domain = None, merge = False):
+    global mark
+    unique_comments = {}
+
+    for record in record_group:
+        if record.action == Actions.FILE_MODIFY or record.action == Actions.FILE_MERGE:
+                blob_mark = print_blob_for_file(record.branch, pathlib.PurePosixPath(record.path), record.timestamp)
+                record.set_blob_mark(blob_mark)
+        if record.comment:
+            if record.comment not in unique_comments:
+                unique_comments[record.comment] = []
+            unique_comments[record.comment].append(record.path)
+
+    mark = mark + 1
+    branch = record.branch
+    if branch == record.mainline:
+        branch = "master"
+    sys.stdout.buffer.write(("commit refs/heads/%s\n" % translate_branch_name(branch)).encode("utf-8"))
+    sys.stdout.buffer.write(("mark :%d\n" % mark).encode("utf-8"))
+    email = ""
+    if email_domain:
+        email = record_group[0].author + "@" + email_domain
+    else:
+        email = record_group[0].author
+    sys.stdout.buffer.write(("author %s <%s> %s %s\n" % (record_group[0].author, email, record_group[0].timestamp, timezone)).encode("utf-8"))
+    sys.stdout.buffer.write(("committer %s <%s> %s %s\n" % (record_group[0].author, email, record_group[0].timestamp, timezone)).encode("utf-8"))
+    if len(unique_comments):
+        full_comment = ""
+        for comment, files in unique_comments.items():
+            full_comment += (comment + "\n")
+            # If we're combining multiple comments lets tell the user which
+            # file(s) each comment is associated with
+            if len(unique_comments) > 1:
+                full_comment += "Above comment references the following files:\n"
+                for file in files:
+                    full_comment += "- %s\n" % file
+                full_comment += "\n"
+        encoded_comment = full_comment.encode("utf-8")
+        sys.stdout.buffer.write(b"data %d\n" % len(encoded_comment))
+        sys.stdout.buffer.write(encoded_comment)
+    else:
+        sys.stdout.buffer.write(b"data 0\n")
+
+    if merge:
+        merge_branch = record.data
+        if merge_branch == record.mainline:
+            merge_branch = "master"
+        sys.stdout.buffer.write(("merge refs/heads/%s\n" % translate_branch_name(merge_branch)).encode("utf-8"))
+
+    for record in record_group:
+        # fixup the paths so the root of the git repo matches the root
+        # of the scm repo origonally passed in
+        full_path = pathlib.PurePosixPath(record.path)
+        repo = pathlib.PurePosixPath(record.repo)
+        path = full_path.relative_to(repo)
+        if record.origPath and record.origPath != "NULL":
+            full_origPath = pathlib.PurePosixPath(record.origPath)
+            origPath = full_origPath.relative_to(repo)
+
+        if record.action == Actions.FILE_MODIFY or record.action == Actions.FILE_MERGE:
+            if record.origPath and record.origPath != "NULL":
+                # looks like there was a previous rename.  use the original name.
+                sys.stdout.buffer.write(('M 100644 :%d "%s"\n' % (record.blob_mark, origPath)).encode("utf-8"))
+            else:
+                # no previous rename.  good to use the current name.
+                sys.stdout.buffer.write(('M 100644 :%d "%s"\n' % (record.blob_mark, path)).encode("utf-8"))
+        elif record.action == Actions.FILE_DELETE:
+            sys.stdout.buffer.write(('D "%s"\n' % path).encode("utf-8"))
+        elif record.action == Actions.FILE_RENAME:
+            # NOTE we're not using record.path here, as there may have been multiple renames in the file's history
+            full_data_path = pathlib.PurePosixPath(record.data)
+            data = full_data_path.relative_to(repo)
+            sys.stdout.buffer.write(('R "%s" "%s"\n' % (origPath, data)).encode("utf-8"))
+        else:
+            raise Exception("Unknown record action")
+
+    # Flush our buffer. We are going to print a lot, so this helps everything
+    # stay in the right order.
+    sys.stdout.flush()
+
+
 def process_database_record_group(c, email_domain = None):
     global mark
 
     # will contain a list of the MODIFY, DELETE, and RENAME records in this
     # group to be processed later
     normal_records = []
+
+    # Any record that took part of a merge will be placed here. The merges are
+    # seperated by the branch merged from. Its unlikely we actually have two
+    # diffrent merges from different branches in the same record group, but
+    # it is possible so it must be handled
+    merge_records = {}
 
     while r := c.fetchone():
         record = DatabaseRecord(r)
@@ -683,6 +771,11 @@ def process_database_record_group(c, email_domain = None):
             # several times to get the print order right
             normal_records.append(record)
 
+        elif record.action == Actions.FILE_MERGE:
+            if record.data not in merge_records:
+                merge_records[record.data] = []
+            merge_records[record.data].append(record)
+
         else:
             raise Exception("Unknown record action")
 
@@ -690,79 +783,12 @@ def process_database_record_group(c, email_domain = None):
         # stay in the right order.
         sys.stdout.flush()
 
-    # Here we are going to combine all the "normal records" into a single commit
+    # Here we are going to combine all the record groups into a single commits
     if len(normal_records):
-        unique_comments = {}
+        process_combined_commit(normal_records, email_domain, False)
 
-        for record in normal_records:
-            if record.action == Actions.FILE_MODIFY:
-                    blob_mark = print_blob_for_file(record.branch, pathlib.PurePosixPath(record.path), record.timestamp)
-                    record.set_blob_mark(blob_mark)
-            if record.comment:
-                if record.comment not in unique_comments:
-                    unique_comments[record.comment] = []
-                unique_comments[record.comment].append(record.path)
-
-        mark = mark + 1
-        branch = record.branch
-        if branch == record.mainline:
-            branch = "master"
-        sys.stdout.buffer.write(("commit refs/heads/%s\n" % translate_branch_name(branch)).encode("utf-8"))
-        sys.stdout.buffer.write(("mark :%d\n" % mark).encode("utf-8"))
-        email = ""
-        if email_domain:
-            email = normal_records[0].author + "@" + email_domain
-        else:
-            email = normal_records[0].author
-        sys.stdout.buffer.write(("author %s <%s> %s %s\n" % (normal_records[0].author, email, normal_records[0].timestamp, timezone)).encode("utf-8"))
-        sys.stdout.buffer.write(("committer %s <%s> %s %s\n" % (normal_records[0].author, email, normal_records[0].timestamp, timezone)).encode("utf-8"))
-        if len(unique_comments):
-            full_comment = ""
-            for comment, files in unique_comments.items():
-                full_comment += (comment + "\n")
-                # If we're combining multiple comments lets tell the user which
-                # file(s) each comment is associated with
-                if len(unique_comments) > 1:
-                    full_comment += "Above comment references the following files:\n"
-                    for file in files:
-                        full_comment += "- %s\n" % file
-                    full_comment += "\n"
-            encoded_comment = full_comment.encode("utf-8")
-            sys.stdout.buffer.write(b"data %d\n" % len(encoded_comment))
-            sys.stdout.buffer.write(encoded_comment)
-        else:
-            sys.stdout.buffer.write(b"data 0\n")
-
-        for record in normal_records:
-            # fixup the paths so the root of the git repo matches the root
-            # of the scm repo origonally passed in
-            full_path = pathlib.PurePosixPath(record.path)
-            repo = pathlib.PurePosixPath(record.repo)
-            path = full_path.relative_to(repo)
-            if record.origPath and record.origPath != "NULL":
-                full_origPath = pathlib.PurePosixPath(record.origPath)
-                origPath = full_origPath.relative_to(repo)
-
-            if record.action == Actions.FILE_MODIFY:
-                if record.origPath and record.origPath != "NULL":
-                    # looks like there was a previous rename.  use the original name.
-                    sys.stdout.buffer.write(('M 100644 :%d "%s"\n' % (record.blob_mark, origPath)).encode("utf-8"))
-                else:
-                    # no previous rename.  good to use the current name.
-                    sys.stdout.buffer.write(('M 100644 :%d "%s"\n' % (record.blob_mark, path)).encode("utf-8"))
-            elif record.action == Actions.FILE_DELETE:
-                sys.stdout.buffer.write(('D "%s"\n' % path).encode("utf-8"))
-            elif record.action == Actions.FILE_RENAME:
-                # NOTE we're not using record.path here, as there may have been multiple renames in the file's history
-                full_data_path = pathlib.PurePosixPath(record.data)
-                data = full_data_path.relative_to(repo)
-                sys.stdout.buffer.write(('R "%s" "%s"\n' % (origPath, data)).encode("utf-8"))
-            else:
-                raise Exception("Unknown record action")
-
-        # Flush our buffer. We are going to print a lot, so this helps everything
-        # stay in the right order.
-        sys.stdout.flush()
+    for merge in merge_records:
+        process_combined_commit(merge_records[merge], email_domain, True)
 
 
 def cmd_export(database, email_domain = None):
