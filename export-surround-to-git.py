@@ -230,11 +230,9 @@ def get_lines_from_sscm_cmd(sscm_cmd):
     stdoutdata, stderrdata = p.communicate()
     stdoutdata = stdoutdata.decode('utf8')
     stderrdata = (stderrdata.strip()).decode('utf8')
-    if stderrdata:
-        sys.stderr.write('\n')
-        sys.stderr.write('[*] sscm error from cmd ' + sscm_cmd + '\n')
-        sys.stderr.write('[*]\t error = ' + stderrdata)
-    return [real_line for real_line in stdoutdata.splitlines() if real_line]
+
+    lines = [real_line for real_line in stdoutdata.splitlines() if real_line]
+    return lines, stderrdata
 
 
 def find_all_branches_in_mainline_containing_path(mainline, path):
@@ -248,7 +246,10 @@ def find_all_branches_in_mainline_containing_path(mainline, path):
     # we can however filter out the branches by using the -o option to print
     # the full path of each branch and manually parse incorrect branches out
     # NOTE: don't use '-f' with this command, as it really restricts overall usage.
-    branches = get_lines_from_sscm_cmd(cmd)
+    branches, stderrdata = get_lines_from_sscm_cmd(cmd)
+
+    if stderrdata:
+        sys.stderr.write('[*] sscm error from cmd lsbranch: %s\n' % stderrdata)
 
     our_branches = {}
     # Parse the branches and find the branches in the path provided
@@ -269,7 +270,7 @@ def find_all_branches_in_mainline_containing_path(mainline, path):
 def find_all_files_in_branches_under_path(branches):
     fileSet = set()
     for branch in branches:
-        sys.stderr.write("\n[*] Looking for files in branch '%s' ..." % branch)
+        sys.stderr.write("[*] Looking for files in branch '%s' ...\n" % branch)
 
         # use all lines from `ls` except for a few
         cmd = sscm + ' ls -b"%s" -p"%s" -r ' % (branch, branches[branch])
@@ -277,7 +278,10 @@ def find_all_files_in_branches_under_path(branches):
             cmd = cmd + '-y"%s":"%s" ' % (username, password)
         #cmd = cmd + '| grep -v \'Total listed files\' | sed -r \'s/unknown status.*$//g\''
         # TODO why were they only looking for files with unkown status
-        lines = get_lines_from_sscm_cmd(cmd)
+        lines, stderrdata = get_lines_from_sscm_cmd(cmd)
+
+        if stderrdata:
+            sys.stderr.write('[*] sscm error from cmd ls: %s\n' % stderrdata)
 
         # directories are listed on their own line, before a section of their files
         # the last line of the output just prints the number of files found so
@@ -321,7 +325,10 @@ def get_file_rename(version, file, repo, branch):
     old = None
     new = None
 
-    lines = get_lines_from_sscm_cmd(cmd)
+    lines, stderrdata = get_lines_from_sscm_cmd(cmd)
+
+    if stderrdata:
+        raise Exception("sscm error from cmd history: %s" % stderrdata)
 
     # Note if for some reason there are multiple file renames in the same version
     # we will ONLY take the last file rename.
@@ -355,7 +362,12 @@ def find_all_file_versions(mainline, branch, path):
         cmd += 'NULL NULL '
     cmd += '"%s" "%s" "%s" "%s"' % (branch, branch, repo, file)
 
-    lines = get_lines_from_sscm_cmd(cmd)
+    lines, stderrdata = get_lines_from_sscm_cmd(cmd)
+    if stderrdata:
+        if stderrdata == "sscm_file_history failed: Record not found; the selected item may not exist.":
+            sys.stderr.write('[*] sscmhistory could not find %s in branch %s\n' % (file, branch))
+        else:
+            sys.stderr.write('[*] sscmhistory error: %s\n' % stderrdata)
 
     versionList = []
 
@@ -429,7 +441,7 @@ def add_record_to_database(record, database):
 
 
 def cmd_parse(mainline, path, database):
-    sys.stderr.write("[+] Beginning parse phase...")
+    sys.stderr.write("[+] Beginning parse phase...\n")
 
     repo = pathlib.PurePosixPath(path)
 
@@ -443,7 +455,7 @@ def cmd_parse(mainline, path, database):
         if is_snapshot_branch(branch, repo):
             continue
 
-        sys.stderr.write("\n[*] Parsing branch '%s' ..." % branch)
+        sys.stderr.write("[*] Parsing branch '%s' ...\n" % branch)
 
         for fullPathWalk in filesToWalk:
             #sys.stderr.write("\n[*] \tParsing file '%s' ..." % fullPathWalk)
@@ -486,7 +498,7 @@ def cmd_parse(mainline, path, database):
                             data = str(data / fileWalk)
                     add_record_to_database(DatabaseRecord((timestamp, actionMap[action], mainline, branch, str(fullPathWalk), origFullPath, version, author, comment, data, str(repo))), database)
 
-    sys.stderr.write("\n[+] Parse phase complete")
+    sys.stderr.write("[+] Parse phase complete\n")
 
 
 # Surround has different naming rules for branches than Git does for branches/tags.
@@ -562,7 +574,7 @@ def print_blob_for_file(branch, fullPath, timestamp=None):
         subprocess.Popen(cmd, shell=True, stdout=fnull, stderr=fnull).communicate()
 
     if not localPath.is_file():
-        sys.stderr.write("\n[+] Failed to download file %s from branch %s. Trying again...\n" % (fullPath, branch))
+        sys.stderr.write("[+] Failed to download file %s from branch %s. Trying again...\n" % (fullPath, branch))
         time.sleep(3)
         with open(os.devnull, 'w') as fnull:
             subprocess.Popen(cmd, shell=True, stdout=fnull, stderr=fnull).communicate()
@@ -792,7 +804,7 @@ def process_database_record_group(c, email_domain = None):
 
 
 def cmd_export(database, email_domain = None):
-    sys.stderr.write("\n[+] Beginning export phase...\n")
+    sys.stderr.write("[+] Beginning export phase...\n")
 
     if not os.path.exists(scratchDir):
         os.mkdir(scratchDir)
@@ -826,7 +838,7 @@ def cmd_export(database, email_domain = None):
         # TODO why doesn't this work?  is this too early since we're piping our output, and then `git fast-import` just creates it again?
         os.remove("./.git/TAG_FIXUP")
 
-    sys.stderr.write("\n[+] Export complete.  Your new Git repository is ready to use.\nDon't forget to run `git repack` at some future time to improve data locality and access performance.\n\n")
+    sys.stderr.write("[+] Export complete.  Your new Git repository is ready to use.\nDon't forget to run `git repack` at some future time to improve data locality and access performance.\n\n")
 
 
 def cmd_verify(mainline, path):
