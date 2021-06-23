@@ -602,7 +602,10 @@ def process_combined_commit(record_group, sscm, email_domain, scratchDir, merge 
         if record.comment:
             if record.comment not in unique_comments:
                 unique_comments[record.comment] = []
-            unique_comments[record.comment].append(record.path)
+            full_path = pathlib.PurePosixPath(record.path)
+            repo = pathlib.PurePosixPath(record.repo)
+            path = full_path.relative_to(repo)
+            unique_comments[record.comment].append(path)
 
     mark = mark + 1
     branch = record.branch
@@ -624,7 +627,6 @@ def process_combined_commit(record_group, sscm, email_domain, scratchDir, merge 
             # If we're combining multiple comments lets tell the user which
             # file(s) each comment is associated with
             if len(unique_comments) > 1:
-                full_comment += "Above comment references the following files:\n"
                 for file in files:
                     full_comment += "- %s\n" % file
                 full_comment += "\n"
