@@ -590,6 +590,44 @@ def print_blob_for_file(branch, fullPath, sscm, scratchDir, timestamp=None):
     sys.stdout.flush()
     return mark
 
+# Surround comments dont have headers so, we need to fixup up the comment
+# to have a header of the appropriate length for git.
+def fixup_comment_header(comment):
+    comment = comment.strip()
+    git_header_len = 72
+    fixed_comment = ""
+
+    if len(comment) < git_header_len:
+        comment_header = comment
+        comment_body = ""
+    else:
+        comment_header = comment[:git_header_len]
+        comment_body = comment[git_header_len:]
+
+    # best case scenario a line break occurs before the max git header len
+    if (i := comment_header.find('\n')) != -1:
+        # This means we are already a legal git comment
+        if i != (len(comment_header) - 1)  and comment_header[i+1] == '\n':
+            fixed_comment = comment_header + comment_body
+        else:
+            fixed_comment = comment_header[:i] + '\n' + comment_header[i:] + comment_body
+    # our whole comment is enough to be the header
+    elif not comment_body:
+        fixed_comment = comment_header
+    # if not we can break the comment at the end of the last sentence before the limit
+    elif (i := comment_header[::-1].find('.')) != -1:
+        fixed_comment = comment_header[:(git_header_len - i)] + '\n\n' + comment_header[(git_header_len - i):].lstrip() + comment_body
+    # If there are no periods we must break on the last space between
+    # words before the limit
+    elif (i := comment_header[:-3][::-1].find(' ')) != -1:
+        fixed_comment = comment_header[:(git_header_len - i - 3)].rstrip() + '...\n\n' + comment_header[(git_header_len - i - 3):].lstrip() + comment_body
+    # Finally if a caveman is writing the comment and used no spaces we
+    # force a cut off at the header limit
+    else:
+        fixed_comment = comment_header[:git_header_len] + '\n\n' + comment_header[git_header_len:]
+
+    return fixed_comment
+
 
 def process_combined_commit(record_group, sscm, email_domain, scratchDir, merge = False):
     global mark
@@ -628,9 +666,10 @@ def process_combined_commit(record_group, sscm, email_domain, scratchDir, merge 
             # file(s) each comment is associated with
             if len(unique_comments) > 1:
                 for file in files:
-                    full_comment += "- %s\n" % file
+                    full_comment += "^ %s\n" % file
                 full_comment += "\n"
-        encoded_comment = full_comment.encode("utf-8")
+
+        encoded_comment = fixup_comment_header(full_comment).encode("utf-8")
         sys.stdout.buffer.write(b"data %d\n" % len(encoded_comment))
         sys.stdout.buffer.write(encoded_comment)
     else:
@@ -723,7 +762,7 @@ def process_database_record_group(c, sscm, scratchDir, email_domain = None):
             sys.stdout.buffer.write(("author %s <%s> %s %s\n" % (record.author, email, record.timestamp, timezone)).encode("utf-8"))
             sys.stdout.buffer.write(("committer %s <%s> %s %s\n" % (record.author, email, record.timestamp, timezone)).encode("utf-8"))
             if record.comment:
-                comment = record.comment.encode("utf-8")
+                comment = fixup_comment_header(record.comment).encode("utf-8")
                 sys.stdout.buffer.write(b"data %d\n" % len(comment))
                 sys.stdout.buffer.write(comment)
                 sys.stdout.buffer.write(b"\n")
