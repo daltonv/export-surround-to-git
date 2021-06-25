@@ -21,7 +21,7 @@
 # 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
 # TODOs
-# - dynamically find a tempory folder to store files. Python should have an os module for this
+# - dynamically find a temporary folder to store files. Python should have an os module for this
 # - try using sscm setclient to handle authentication instead of passing the password here
 # - allow the user to name the database file
 
@@ -238,7 +238,7 @@ def find_all_branches_in_mainline_containing_path(mainline, path, sscm):
     if sscm.username and sscm.password:
         cmd = cmd + '-y"%s":"%s" ' % (sscm.username, sscm.password)
 
-    # FTODO this command yields branches that don't include the path specified.
+    # This command yields branches that don't include the path specified.
     # we can however filter out the branches by using the -o option to print
     # the full path of each branch and manually parse incorrect branches out
     # NOTE: don't use '-f' with this command, as it really restricts overall usage.
@@ -268,12 +268,10 @@ def find_all_files_in_branches_under_path(branches, sscm):
     for branch in branches:
         sys.stderr.write("[*] Looking for files in branch '%s' ...\n" % branch)
 
-        # use all lines from `ls` except for a few
         cmd = sscm.exe + ' ls -b"%s" -p"%s" -r ' % (branch, branches[branch])
         if sscm.username and sscm.password:
             cmd = cmd + '-y"%s":"%s" ' % (sscm.username, sscm.password)
-        #cmd = cmd + '| grep -v \'Total listed files\' | sed -r \'s/unknown status.*$//g\''
-        # TODO why were they only looking for files with unkown status
+
         lines, stderrdata = get_lines_from_sscm_cmd(cmd)
 
         if stderrdata:
@@ -378,7 +376,7 @@ def find_all_file_versions(mainline, branch, path, sscm):
             version = int(lines_group[0])
             # strip the seconds out of the time as it is too precise. Many
             # file changes only differ by a second as Surround alters each file
-            # as part of a group checkin operation
+            # as part of a group check in operation
             time_struct = time.localtime(int(lines_group[1]))
             time_string = time.strftime("%Y%m%d%H:%M:59", time_struct)
             new_time_struct = time.strptime(time_string, "%Y%m%d%H:%M:%S")
@@ -480,7 +478,7 @@ def cmd_parse(mainline, path, database, sscm):
                     # each add to branch command happens once for a new branch, but will show up on each file
                     # that is a part of the branch added too. To ensure there are no duplicates use an empty
                     # string for origPath (its irrelevant in the export phase for this action) and set the version
-                    # to one. We cant use None/NULL for these values as SQLITE doesnt consider NULL==NULL as a true
+                    # to one. We cant use None/NULL for these values as SQLITE doesn't consider NULL==NULL as a true
                     # statement.
                     add_record_to_database(DatabaseRecord((timestamp, branchAction, mainline, branch, branch_path, "NULL", 1, author, comment, data, str(repo))), database)
                 else:
@@ -590,7 +588,7 @@ def print_blob_for_file(branch, fullPath, sscm, scratchDir, timestamp=None):
     sys.stdout.flush()
     return mark
 
-# Surround comments dont have headers so, we need to fixup up the comment
+# Surround comments don't have headers so, we need to fixup up the comment
 # to have a header of the appropriate length for git.
 def fixup_comment_header(comment):
     comment = comment.strip()
@@ -683,7 +681,7 @@ def process_combined_commit(record_group, sscm, email_domain, scratchDir, merge 
 
     for record in record_group:
         # fixup the paths so the root of the git repo matches the root
-        # of the scm repo origonally passed in
+        # of the scm repo originally passed in
         full_path = pathlib.PurePosixPath(record.path)
         repo = pathlib.PurePosixPath(record.repo)
         path = full_path.relative_to(repo)
