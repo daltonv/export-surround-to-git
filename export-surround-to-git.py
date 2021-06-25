@@ -833,11 +833,16 @@ def process_database_record_group(c, sscm, scratchDir, email_domain = None):
         sys.stdout.flush()
 
     # Here we are going to combine all the record groups into a single commits
-    if len(normal_records):
-        process_combined_commit(normal_records, sscm, email_domain, scratchDir, False)
-
+    #
+    # We want to process merge commits first because Surround handles merges with
+    # with renames in two steps. First the merge of the content and then a rename.
+    # The rename needs to happen after or we get both names of the file after
+    # merge
     for merge in merge_records:
         process_combined_commit(merge_records[merge], sscm, email_domain, scratchDir, True)
+
+    if len(normal_records):
+        process_combined_commit(normal_records, sscm, email_domain, scratchDir, False)
 
 
 def cmd_export(database, email_domain, sscm):
