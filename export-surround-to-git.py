@@ -58,6 +58,7 @@ import sqlite3
 import os
 import pathlib
 import shutil
+import math
 
 
 #
@@ -374,11 +375,13 @@ def find_all_file_versions(mainline, branch, path, sscm):
             lines_group = lines[:i]
 
             version = int(lines_group[0])
-            # strip the seconds out of the time as it is too precise. Many
-            # file changes only differ by a second as Surround alters each file
-            # as part of a group check in operation
+            # round the seconds up to the nearest 5 out of the time as it is too
+            # precise. Many file changes only differ by a second as Surround
+            # alters each file as part of a group check in operation
             time_struct = time.localtime(int(lines_group[1]))
-            time_string = time.strftime("%Y%m%d%H:%M:59", time_struct)
+            timestamp_seconds = time_struct.tm_sec
+            rounded_seconds = 5 * int(math.ceil(timestamp_seconds / 5))
+            time_string = time.strftime(("%Y%m%d%H:%M:" + str(rounded_seconds)), time_struct)
             new_time_struct = time.strptime(time_string, "%Y%m%d%H:%M:%S")
             timestamp = int(time.mktime(new_time_struct))
             action = int(lines_group[2])
