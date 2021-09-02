@@ -445,6 +445,11 @@ def cmd_parse(mainline, path, database, sscm):
 
     branches = find_all_branches_in_mainline_containing_path(mainline, repo, sscm)
 
+    # some file operations can happen on deleted branches. Here we can mark
+    # branches we find that were deleted (ie didn't show up in the above
+    # branches list)
+    deleted_branches = []
+
     # NOTE how we're passing branches, not branch.  this is to detect deleted files.
     filesToWalk = find_all_files_in_branches_under_path(branches, sscm)
 
@@ -462,23 +467,27 @@ def cmd_parse(mainline, path, database, sscm):
             fileWalk = fullPathWalk.name
 
             versions = find_all_file_versions(mainline, branch, fullPathWalk, sscm)
-            #sys.stderr.write("\n[*] \t\tversions = %s" % versions)
+            # TODO: Rework this insanity below. We add files in different ways depending on several
+            # variables. It would be much better if we handled these special cases above.
+            # Additionally the data base itself has columns that hold different data depending on the
+            # action performed, we should just use more columns.
             for timestamp, action, origPath, version, author, comment, data in versions:
                 # branch operations don't follow the actionMap
                 if action == SSCMFileAction.AddToBranch:
+                    if data not in branches:
+                        if (data not in deleted_branches):
+                            deleted_branches.append(data)
+                            sys.stderr.write("[*] Files were added to branch %s, although this branch no longer exists. Ignoring this operation.\n" % data)
+                        continue
+
                     if is_snapshot_branch(data, pathWalk, sscm):
                         branchAction = Actions.BRANCH_SNAPSHOT
                     else:
                         branchAction = Actions.BRANCH_BASELINE
 
-                    # Some branch actions occur on deleted branches. In that case
-                    # the branch won't appear in branches list. We will just treat
-                    # the path as the repo path in this case. # TODO handle deleted
-                    # branches better
-                    if data in branches:
-                        branch_path = str(branches[data])
-                    else:
-                        branch_path = str(repo)
+                    # Get the repo path for the branch being added to.
+                    branch_path = str(branches[data])
+
                     # each add to branch command happens once for a new branch, but will show up on each file
                     # that is a part of the branch added too. To ensure there are no duplicates use an empty
                     # string for origPath (its irrelevant in the export phase for this action) and set the version
@@ -486,6 +495,12 @@ def cmd_parse(mainline, path, database, sscm):
                     # statement.
                     add_record_to_database(DatabaseRecord((timestamp, branchAction, mainline, branch, branch_path, "NULL", 1, author, comment, data, str(repo))), database)
                 else:
+                    # If we are in a merge operation from a branch that was deleted
+                    # treat it as a modify, so we still see the changes in the history
+                    # TODO: consider handling this in find_all_file_versions()
+                    if actionMap[action] == Actions.FILE_MERGE and data not in branches:
+                        action = Actions.FILE_MODIFY
+
                     origFullPath = None
                     if origPath:
                         if action == SSCMFileAction.FileRenamed:
