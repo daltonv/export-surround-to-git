@@ -378,9 +378,10 @@ def find_all_file_versions(mainline, branch, path, sscm):
             # round the seconds up to the nearest 5 out of the time as it is too
             # precise. Many file changes only differ by a second as Surround
             # alters each file as part of a group check in operation
+            round_target = 10
             time_struct = time.localtime(int(lines_group[1]))
             timestamp_seconds = time_struct.tm_sec
-            rounded_seconds = 5 * int(math.ceil(timestamp_seconds / 5))
+            rounded_seconds = round_target * int(math.ceil(timestamp_seconds / round_target))
             time_string = time.strftime(("%Y%m%d%H:%M:" + str(rounded_seconds)), time_struct)
             new_time_struct = time.strptime(time_string, "%Y%m%d%H:%M:%S")
             timestamp = int(time.mktime(new_time_struct))
