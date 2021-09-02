@@ -630,7 +630,7 @@ def fixup_comment_header(comment):
     return fixed_comment
 
 
-def process_combined_commit(record_group, sscm, email_domain, scratchDir, merge = False):
+def process_combined_commit(record_group, sscm, email_domain, scratchDir, default_branch, merge = False):
     global mark
     unique_comments = {}
 
@@ -649,7 +649,7 @@ def process_combined_commit(record_group, sscm, email_domain, scratchDir, merge 
     mark = mark + 1
     branch = record.branch
     if branch == record.mainline:
-        branch = "master"
+        branch = default_branch
     sys.stdout.buffer.write(("commit refs/heads/%s\n" % translate_branch_name(branch)).encode("utf-8"))
     sys.stdout.buffer.write(("mark :%d\n" % mark).encode("utf-8"))
     email = ""
@@ -679,7 +679,7 @@ def process_combined_commit(record_group, sscm, email_domain, scratchDir, merge 
     if merge:
         merge_branch = record.data
         if merge_branch == record.mainline:
-            merge_branch = "master"
+            merge_branch = default_branch
         sys.stdout.buffer.write(("merge refs/heads/%s\n" % translate_branch_name(merge_branch)).encode("utf-8"))
 
     for record in record_group:
@@ -714,7 +714,7 @@ def process_combined_commit(record_group, sscm, email_domain, scratchDir, merge 
     sys.stdout.flush()
 
 
-def process_database_record_group(c, sscm, scratchDir, email_domain = None):
+def process_database_record_group(c, sscm, scratchDir, default_branch, email_domain = None):
     global mark
 
     # will contain a list of the MODIFY, DELETE, and RENAME records in this
@@ -738,7 +738,7 @@ def process_database_record_group(c, sscm, scratchDir, email_domain = None):
             sys.stdout.buffer.write(b"reset TAG_FIXUP\n")
             parentBranch =  record.branch
             if record.branch == record.mainline:
-                parentBranch = "master"
+                parentBranch = default_branch
             sys.stdout.buffer.write(("from refs/heads/%s\n" % translate_branch_name(parentBranch)).encode("utf-8"))
 
             # get all files contained within snapshot
@@ -804,7 +804,7 @@ def process_database_record_group(c, sscm, scratchDir, email_domain = None):
             sys.stdout.buffer.write(("reset refs/heads/%s\n" % translate_branch_name(record.data)).encode("utf-8"))
             parentBranch = record.branch
             if record.branch == record.mainline:
-                parentBranch = "master"
+                parentBranch = default_branch
             parentBranch = translate_branch_name(parentBranch)
             if is_snapshot_branch(parentBranch, os.path.split(record.path)[0], sscm):
                 # Git won't let us refer to the tag directly (maybe this will be fixed in a future version).
@@ -840,13 +840,13 @@ def process_database_record_group(c, sscm, scratchDir, email_domain = None):
     # The rename needs to happen after or we get both names of the file after
     # merge
     for merge in merge_records:
-        process_combined_commit(merge_records[merge], sscm, email_domain, scratchDir, True)
+        process_combined_commit(merge_records[merge], sscm, email_domain, scratchDir, default_branch, True)
 
     if len(normal_records):
-        process_combined_commit(normal_records, sscm, email_domain, scratchDir, False)
+        process_combined_commit(normal_records, sscm, email_domain, scratchDir, default_branch, False)
 
 
-def cmd_export(database, email_domain, sscm):
+def cmd_export(database, email_domain, sscm, default_branch):
     sys.stderr.write("[+] Beginning export phase...\n")
 
     # temp directory in cwd, holds files fetched from Surround
@@ -868,7 +868,7 @@ def cmd_export(database, email_domain, sscm):
     records_group = []
     while record := c1.fetchone():
         c2.execute("SELECT * FROM operations WHERE timestamp == %d AND branch == '%s' ORDER BY action ASC" % (record[0], record[1]))
-        process_database_record_group(c2, sscm, scratchDir, email_domain)
+        process_database_record_group(c2, sscm, scratchDir, default_branch, email_domain)
         count = count + 1
         # print progress every 5 operations
         if count % 5 == 0 and record:
@@ -906,13 +906,13 @@ def handle_command(parser):
     elif args.command == "export" and args.database:
         verify_surround_environment(sscm)
         database = sqlite3.connect(args.database)
-        cmd_export(database, args.email, sscm)
+        cmd_export(database, args.email, sscm, args.branch)
     elif args.command == "all" and args.mainline and args.path:
         # typical case
         verify_surround_environment(sscm)
         database = create_database()
         cmd_parse(args.mainline, args.path, database, sscm)
-        cmd_export(database, args.email, sscm)
+        cmd_export(database, args.email, sscm, args.branch)
     elif args.command == "verify" and args.mainline and args.path:
         # the 'verify' operation must take place after the export has completed.
         # as such, it will always be conducted as its own separate operation.
@@ -925,6 +925,7 @@ def handle_command(parser):
 
 def parse_arguments():
     parser = argparse.ArgumentParser(prog='export-surround-to-git.py', description='Exports history from Seapine Surround in a format parsable by `git fast-import`.', formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('-b', '--branch', default="main", help='default branch in the git repo')
     parser.add_argument('-m', '--mainline', help='Mainline branch containing history to export')
     parser.add_argument('-p', '--path', help='Path containing history to export')
     parser.add_argument('-d', '--database', help='Path to local database (only used when resuming an export)')
