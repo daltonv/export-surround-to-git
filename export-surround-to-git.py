@@ -340,7 +340,7 @@ def get_file_rename(version, file, repo, branch, sscm):
     return (old, new)
 
 
-def find_all_file_versions(mainline, branch, path, sscm):
+def find_all_file_versions(branch, path, snapshot, sscm):
     repo = path.parent
     file = path.name
     # The sscm history command is too difficult to parse corerectly so here we
@@ -393,6 +393,16 @@ def find_all_file_versions(mainline, branch, path, sscm):
             comment = '\n'.join(lines_group[5:])
             origFile = "NULL"
 
+            # AddFromBranch commands are already handled by the AddToBranch
+            # commands from the spawning branch for snapshots, so just ignore
+            # these. TODO: Maybe do this for regular branches too?
+            if action == SSCMFileAction.AddFromBranch and snapshot:
+                if len(lines[i:]) > 1:
+                    lines = lines[(i+1):]
+                    continue
+                else:
+                    break
+
             # Unfortunately the API only tells us a rename happened and not
             # what the rename was. To get these names we use a helper function
             # that calls 'sscm history'. Finding just the rename info is
@@ -438,7 +448,7 @@ def add_record_to_database(record, database):
         database.commit()
 
 
-def cmd_parse(mainline, path, database, sscm):
+def cmd_parse(mainline, path, database, sscm, parse_snapshot):
     sys.stderr.write("[+] Beginning parse phase...\n")
 
     repo = pathlib.PurePosixPath(path)
@@ -455,7 +465,8 @@ def cmd_parse(mainline, path, database, sscm):
 
     for branch in branches:
         # Skip snapshot branches
-        if is_snapshot_branch(branch, repo, sscm):
+        snapshot = is_snapshot_branch(branch, repo, sscm)
+        if(not parse_snapshot and snapshot):
             continue
 
         sys.stderr.write("[*] Parsing branch '%s' ...\n" % branch)
@@ -466,7 +477,7 @@ def cmd_parse(mainline, path, database, sscm):
             pathWalk = fullPathWalk.parent
             fileWalk = fullPathWalk.name
 
-            versions = find_all_file_versions(mainline, branch, fullPathWalk, sscm)
+            versions = find_all_file_versions(branch, fullPathWalk, snapshot, sscm)
             # TODO: Rework this insanity below. We add files in different ways depending on several
             # variables. It would be much better if we handled these special cases above.
             # Additionally the data base itself has columns that hold different data depending on the
@@ -930,7 +941,7 @@ def handle_command(parser):
     if args.command == "parse" and args.mainline and args.path:
         verify_surround_environment(sscm)
         database = create_database()
-        cmd_parse(args.mainline, args.path, database, sscm)
+        cmd_parse(args.mainline, args.path, database, sscm, args.snapshot)
     elif args.command == "export" and args.database:
         verify_surround_environment(sscm)
         database = sqlite3.connect(args.database)
@@ -939,7 +950,7 @@ def handle_command(parser):
         # typical case
         verify_surround_environment(sscm)
         database = create_database()
-        cmd_parse(args.mainline, args.path, database, sscm)
+        cmd_parse(args.mainline, args.path, database, sscm, args.snapshot)
         cmd_export(database, args.email, sscm, args.branch)
     elif args.command == "verify" and args.mainline and args.path:
         # the 'verify' operation must take place after the export has completed.
@@ -962,6 +973,7 @@ def parse_arguments():
     parser.add_argument('-i', '--install', default='sscm' ,help='Full path to sscm executable')
     parser.add_argument('-ho', '--host', help='Surround SCM server host address')
     parser.add_argument('-po', '--port', help='Surround SCM server port number')
+    parser.add_argument('--snapshot', action='store_true')
     parser.add_argument('--email', help='Domain for the email address')
     parser.add_argument('--version', action='version', version='%(prog)s ' + VERSION)
     parser.add_argument('command', nargs='?', default='all')
