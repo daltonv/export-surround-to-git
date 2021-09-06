@@ -891,6 +891,18 @@ def cmd_export(database, email_domain, sscm, default_branch):
             # just print the date we're currently servicing
             print("progress", time.strftime('%Y-%m-%d', time.localtime(record[0])))
 
+    # Make a new tag at the end to show the last surround commit
+    sys.stdout.buffer.write(b"tag surround-import\n")
+    sys.stdout.buffer.write(("from refs/heads/%s\n" % default_branch).encode("utf-8"))
+    sys.stdout.buffer.write(("tagger %s <%s> %d %s\n" % ("export-surround-to-git", "export-surround-to-git", int(time.time()), timezone)).encode("utf-8"))
+    comment = ("Last Surround SCM commit\n"
+               "\n"
+               "This is the last commit from the Surround SCM version of this "
+               "project\n").encode("utf-8")
+    sys.stdout.buffer.write(b"data %d\n" % len(comment))
+    sys.stdout.buffer.write(comment)
+    sys.stdout.buffer.write(b"\n")
+
     # cleanup
     try:
         shutil.rmtree(scratchDir)
