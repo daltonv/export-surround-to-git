@@ -812,7 +812,7 @@ def process_database_record_group(c, sscm, scratchDir, default_branch, email_dom
                 sys.stdout.buffer.write(b"data 0\n")
 
             # save off the mapping between the tag name and the tag mark
-            tagDict[translate_branch_name(record.data)] = mark
+            tagDict[record.data] = mark
 
         elif record.action == Actions.BRANCH_BASELINE:
             # the idea hers is to simply 'reset' to create our new branch, the name of which is contained in the 'data' field
@@ -821,14 +821,14 @@ def process_database_record_group(c, sscm, scratchDir, default_branch, email_dom
             parentBranch = record.branch
             if record.branch == record.mainline:
                 parentBranch = default_branch
-            parentBranch = translate_branch_name(parentBranch)
-            if is_snapshot_branch(parentBranch, os.path.split(record.path)[0], sscm):
+            if is_snapshot_branch(parentBranch, str(record.path), sscm):
                 # Git won't let us refer to the tag directly (maybe this will be fixed in a future version).
                 # for now, we have to refer to the associated tag mark instead.
                 # (if this is fixed in the future, we can get rid of tagDict altogether)
                 sys.stdout.buffer.write(b"from :%d\n" % tagDict[parentBranch])
             else:
                 # baseline branch
+                parentBranch = translate_branch_name(parentBranch)
                 sys.stdout.buffer.write(("from refs/heads/%s\n" % parentBranch).encode("utf-8"))
 
         elif record.action == Actions.FILE_MODIFY or record.action == Actions.FILE_DELETE or record.action == Actions.FILE_RENAME:
