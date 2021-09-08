@@ -18,6 +18,22 @@ This project was last tested using the following environment:
 #   * Ubuntu 20.04.2 LTS
 ```
 
+# Unsuporrted features
+Some features are fixable, but others simply require APIs that Surround does
+not have.
+
+## Fixable
+* Detecting folder renames. In Surround Folders and Files are different enteties,
+so if a folder was renamed all files in that folder will NOT have an entry for
+rename/move in their history. It will instead be placed in the folder's history.
+The script does not currently detect this, and the current folder name is always
+used. Tags will always use the correct folder name though.
+
+## Unfixable
+* Detecting files that were deleted, but never placed in another branch. These
+files will never be added to the git repo. We have to detect deleted files,
+by parsing all subbranches of a branch and finding files that don't exist in
+the root branch.
 
 # Usage
 Currently the sscmhist.exe has to be manually compiled before running the
