@@ -221,15 +221,44 @@ def verify_surround_environment(sscm):
         return (p.returncode == 0)
 
 
-def get_lines_from_sscm_cmd(sscm_cmd):
+def get_lines_from_sscm_cmd(sscm_cmd, split_lines=True):
     # helper function to clean each item on a line since sscm has lots of newlines
     p = subprocess.Popen(sscm_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     stdoutdata, stderrdata = p.communicate()
     stdoutdata = stdoutdata.decode('utf8')
     stderrdata = (stderrdata.strip()).decode('utf8')
 
-    lines = [real_line for real_line in stdoutdata.splitlines() if real_line]
+    if split_lines:
+        lines = [real_line for real_line in stdoutdata.splitlines() if real_line]
+    else:
+        lines = stdoutdata
+
     return lines, stderrdata
+
+
+def find_branch_renames(branch, path, sscm):
+    cmd = sscm.exe + ' branchhistory -b"%s" -p"%s" ' % (branch, path)
+    if sscm.username and sscm.password:
+        cmd = cmd + '-y"%s":"%s" ' % (sscm.username, sscm.password)
+
+    output, stderrdata = get_lines_from_sscm_cmd(cmd, False)
+    if stderrdata:
+        raise Exception(stderrdata)
+
+    # This regex only looks for the original name. We don't care about what it
+    # was renamed to because we already know it ultimately becomes branch
+    r = r"Renamed from ([^\\/\*?]+) to"
+    mi = re.finditer(r, output, re.MULTILINE)
+
+    old_names = []
+
+    for m in mi:
+        if m:
+            sys.stderr.write('[*] found branch "%s" had a previous name of '
+                             '%s\n' %(branch, m.group(1)))
+            old_names.append(m.group(1))
+
+    return old_names
 
 
 def find_all_branches_in_mainline_containing_path(mainline, path, sscm):
@@ -249,6 +278,7 @@ def find_all_branches_in_mainline_containing_path(mainline, path, sscm):
         sys.stderr.write('[*] sscm error from cmd lsbranch: %s\n' % stderrdata)
 
     our_branches = {}
+    our_old_names = {}
     # Parse the branches and find the branches in the path provided
     for branch in branches:
         if branch.startswith(str(path)):
@@ -260,8 +290,20 @@ def find_all_branches_in_mainline_containing_path(mainline, path, sscm):
                 branch_repo = pathlib.PurePosixPath(match.group(3))
                 if str(branch_repo).startswith((str(path) + '/')) or branch_repo == path:
                     our_branches[found_branch.name] = branch_repo
+                    # Get all of this branch's old names and add them to a
+                    # dict
+                    old_names = find_branch_renames(found_branch.name,
+                                                    branch_repo,
+                                                    sscm)
+                    for old_name in old_names:
+                        # This shouldn't happen, but our branches list will
+                        # always be small so might as well check
+                        if old_name in our_old_names:
+                            raise Exception("%s already in our_old_names" %
+                                            old_name)
+                        our_old_names[old_name] = found_branch.name
 
-    return our_branches
+    return our_branches, our_old_names
 
 
 def find_all_files_in_branches_under_path(branches, sscm):
@@ -453,7 +495,7 @@ def cmd_parse(mainline, path, database, sscm, parse_snapshot):
 
     repo = pathlib.PurePosixPath(path)
 
-    branches = find_all_branches_in_mainline_containing_path(mainline, repo, sscm)
+    branches, branch_renames = find_all_branches_in_mainline_containing_path(mainline, repo, sscm)
 
     # some file operations can happen on deleted branches. Here we can mark
     # branches we find that were deleted (ie didn't show up in the above
@@ -485,11 +527,15 @@ def cmd_parse(mainline, path, database, sscm, parse_snapshot):
             for timestamp, action, origPath, version, author, comment, data in versions:
                 # branch operations don't follow the actionMap
                 if action == SSCMFileAction.AddToBranch:
-                    if data not in branches:
+                    if data not in branches and data not in branch_renames:
                         if (data not in deleted_branches):
                             deleted_branches.append(data)
                             sys.stderr.write("[*] Files were added to branch %s, although this branch no longer exists. Ignoring this operation.\n" % data)
                         continue
+                    elif data not in branches and data in branch_renames:
+                        # This branch was renamed. So the addToBranch operation
+                        # should actually reference the current name.
+                        data = branch_renames[data]
 
                     if is_snapshot_branch(data, pathWalk, sscm):
                         branchAction = Actions.BRANCH_SNAPSHOT
@@ -509,8 +555,12 @@ def cmd_parse(mainline, path, database, sscm, parse_snapshot):
                     # If we are in a merge operation from a branch that was deleted
                     # treat it as a modify, so we still see the changes in the history
                     # TODO: consider handling this in find_all_file_versions()
-                    if actionMap[action] == Actions.FILE_MERGE and data not in branches:
+                    if actionMap[action] == Actions.FILE_MERGE and data not in branches and data not in branch_renames:
                         action = Actions.FILE_MODIFY
+                    elif actionMap[action] == Actions.FILE_MERGE and data not in branches and data in branch_renames:
+                        # This branch was renamed. So the merge operation
+                        # should actually reference the current name.
+                        data = branch_renames[data]
 
                     origFullPath = None
                     if origPath:
