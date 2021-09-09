@@ -211,6 +211,18 @@ class SSCM:
         self.username = username
         self.password = password
 
+# Hold all information from a file event returned by sscmhist.exe
+class FileEvent:
+    def __init__(self, file, branch, version, timestamp, action, data, author, comment):
+        self.file = file
+        self.branch = branch
+        self.version = version
+        self.timestamp = timestamp
+        self.action = action
+        self.data = data
+        self.author = author
+        self.comment = comment
+
 
 def verify_surround_environment(sscm):
     # verify we have sscm client installed and in PATH
@@ -382,8 +394,118 @@ def get_file_rename(version, file, repo, branch, sscm):
     return (old, new)
 
 
-def find_all_file_versions(branch, path, snapshot, sscm):
-    repo = path.parent
+def round_timestamp(timestamp, round_target):
+    # round the seconds up to the nearest 5 out of the time as it is too
+    # precise. Many file changes only differ by a second as Surround
+    # alters each file as part of a group check in operation
+    time_struct = time.localtime(timestamp)
+
+    timestamp_seconds = time_struct.tm_sec
+    rounded_seconds = round_target * int(math.ceil(timestamp_seconds /
+                                                   round_target))
+
+    time_string = time.strftime(("%Y%m%d%H:%M:" + str(rounded_seconds)),
+                                 time_struct)
+    new_time_struct = time.strptime(time_string, "%Y%m%d%H:%M:%S")
+
+    rounded_timestamp = int(time.mktime(new_time_struct))
+
+    return rounded_timestamp
+
+
+def operation_from_event(event, snapshot, branches, branch_renames, mainline, repo, sscm):
+    timestamp = round_timestamp(event.timestamp, 10)
+    author = event.author
+    comment = event.comment
+    branch = event.branch
+    # The below variables could get rewritten depending on the action
+    path = str(event.file)
+    action = actionMap[event.action]
+    version = event.version
+    origPath = None
+    data = None
+
+    if (event.action == SSCMFileAction.FileMoved or
+        event.action == SSCMFileAction.FileRenamed):
+        file = event.file.name
+        folder = event.file.parent
+
+        # Unfortunately the API only tells us a rename happened and not
+        # what the rename was. To get these names we use a helper function
+        # that calls 'sscm history'. Finding just the rename info is
+        # relatively safe by parsing the output with regex.
+        (oldName, newName) = get_file_rename(event.version , file, folder,
+                                             event.branch, sscm)
+        newName_p = pathlib.PurePosixPath(newName)
+        oldName_p = pathlib.PurePosixPath(oldName)
+
+        if event.action == SSCMFileAction.FileRenamed:
+            origPath = str(folder / oldName_p)
+            data = str(folder / newName_p)
+        else:
+            origPath = str(oldName_p / file)
+            data = str(newName_p / file)
+
+    elif event.action == SSCMFileAction.AddToBranch:
+        # Special actions for branch operations
+        data = event.data
+
+        # If the destination branch was deleted ignore this operation as we
+        # wont have the data to complete it in the export phase,
+        # but if the source branch was just renamed fixup the name
+        if data not in branches and data not in branch_renames:
+            return None
+        elif data not in branches and data in branch_renames:
+            data = branch_renames[data]
+
+        if is_snapshot_branch(data, event.file.parent, sscm):
+            action = Actions.BRANCH_SNAPSHOT
+        else:
+            action = Actions.BRANCH_BASELINE
+
+        # The path for branch operations is the root of the branch
+        path = str(branches[data])
+
+        # Manually set these to ensure no duplicates in the DB
+        # TODO: Maybe consider a better primary key to avoid this
+        version = 0
+        origPath = "NULL"
+
+    elif event.action == SSCMFileAction.AddFromBranch:
+        # In case we are parsing snapshots too ignore the AddFromBranch
+        # commands as these commands are already parsed by the AddToBranch from
+        # source branch
+        if snapshot:
+            return None
+
+    elif (event.action == SSCMFileAction.PromoteFromBranchWithMerge or
+          event.action == SSCMFileAction.PromoteFromBranchWithOutMerge):
+        # Special actions for merge operations
+        data = event.data
+
+        # If the source branch was deleted treat as a modify, but if the source
+        # branch was just renamed fixup the name
+        if data not in branches and data not in branch_renames:
+            action = Actions.FILE_MODIFY
+        elif data not in branches and data in branch_renames:
+            data = branch_renames[data]
+
+        # If the source branch is a snapshot, well this is just silly.
+        # Snapshots should not modify anything and we can have a tag as a merge
+        # point, so for now just treat this as an in place modify.
+        # TODO: maybe stop this and handle correctly in export phase.
+        if is_snapshot_branch(data, event.file.parent, sscm):
+            action = Actions.FILE_MODIFY
+
+    operation = DatabaseRecord((timestamp, action, mainline, branch, path,
+                                origPath, version, author, comment, data,
+                                str(repo)))
+
+    return operation
+
+
+def find_all_file_operations(branch, path, snapshot, repo, mainline, branches, branch_renames, sscm):
+    folder = path.parent
     file = path.name
     # The sscm history command is too difficult to parse corerectly so here we
     # use a tool created with the sscm API that we control
@@ -397,71 +519,52 @@ def find_all_file_versions(branch, path, snapshot, sscm):
     else:
         # TODO handle this better
         cmd += 'NULL NULL '
-    cmd += '"%s" "%s" "%s" "%s"' % (branch, branch, repo, file)
+    cmd += '"%s" "%s" "%s" "%s"' % (branch, branch, folder, file)
 
-    lines, stderrdata = get_lines_from_sscm_cmd(cmd)
+    operations = []
+
+    output, stderrdata = get_lines_from_sscm_cmd(cmd)
     if stderrdata:
-        if stderrdata == "sscm_file_history failed: Record not found; the selected item may not exist.":
-            sys.stderr.write('[*] sscmhistory could not find %s in branch %s\n' % (file, branch))
+        if stderrdata == ("sscm_file_history failed: Record not found; the "
+                          "selected item may not exist."):
+            sys.stderr.write('[*] sscmhistory could not find %s in branch %s\n'
+                             % (file, branch))
+            return operations
         else:
-            sys.stderr.write('[*] sscmhistory error: %s\n' % stderrdata)
+            raise Exception('[*] sscmhistory error: %s\n' % stderrdata)
 
-    versionList = []
+    # join the lines again so we can split on the comment delimiter Add a final
+    # newline as the last comment delimiter won't have one.
+    output = '\n'.join(output) + '\n'
 
-    if lines:
-        # TODO: use an actual condition in the while loop instead of relying on
-        # the break.
-        while 1:
-            i = lines.index("--END_COMMENT--")
+    file_events = output.split("--END_COMMENT--\n")
 
-            lines_group = lines[:i]
+    for ev in file_events:
+        # the last operation might be empty due to how we split above. so we
+        # can skip it.
+        if not ev:
+            continue
 
-            version = int(lines_group[0])
-            # round the seconds up to the nearest 5 out of the time as it is too
-            # precise. Many file changes only differ by a second as Surround
-            # alters each file as part of a group check in operation
-            round_target = 10
-            time_struct = time.localtime(int(lines_group[1]))
-            timestamp_seconds = time_struct.tm_sec
-            rounded_seconds = round_target * int(math.ceil(timestamp_seconds / round_target))
-            time_string = time.strftime(("%Y%m%d%H:%M:" + str(rounded_seconds)), time_struct)
-            new_time_struct = time.strptime(time_string, "%Y%m%d%H:%M:%S")
-            timestamp = int(time.mktime(new_time_struct))
-            action = int(lines_group[2])
-            data = lines_group[3]
-            if data == "(null)":
-                data = None
-            author = lines_group[4]
-            comment = '\n'.join(lines_group[5:])
-            origFile = "NULL"
+        ev_lines = ev.splitlines()
 
-            # AddFromBranch commands are already handled by the AddToBranch
-            # commands from the spawning branch for snapshots, so just ignore
-            # these. TODO: Maybe do this for regular branches too?
-            if action == SSCMFileAction.AddFromBranch and snapshot:
-                if len(lines[i:]) > 1:
-                    lines = lines[(i+1):]
-                    continue
-                else:
-                    break
+        # Get output from sscm cli
+        version = int(ev_lines[0])
+        timestamp = int(ev_lines[1])
+        action = int(ev_lines[2])
+        data = ev_lines[3]
+        author = ev_lines[4]
+        comment = '\n'.join(ev_lines[5:])
 
-            # Unfortunately the API only tells us a rename happened and not
-            # what the rename was. To get these names we use a helper function
-            # that calls 'sscm history'. Finding just the rename info is
-            # relatively safe by parsing the output with regex.
-            if action == SSCMFileAction.FileMoved or action == SSCMFileAction.FileRenamed:
-                (oldName, newName) = get_file_rename(version , file, repo, branch, sscm)
-                data = pathlib.PurePosixPath(newName)
-                origFile = pathlib.PurePosixPath(oldName)
+        event = FileEvent(path, branch, version, timestamp, action, data,
+                          author, comment)
 
-            versionList.append((timestamp, action, origFile, version, author, comment, data))
+        op = operation_from_event(event, snapshot, branches, branch_renames,
+                                  mainline, repo, sscm)
 
-            if len(lines[i:]) > 1:
-                lines = lines[(i+1):]
-            else:
-                break
+        if op:
+            operations.append(op)
 
-    return versionList
+    return operations
 
 
 def create_database():
@@ -516,61 +619,10 @@ def cmd_parse(mainline, path, database, sscm, parse_snapshot):
         for fullPathWalk in filesToWalk:
             #sys.stderr.write("\n[*] \tParsing file '%s' ..." % fullPathWalk)
 
-            pathWalk = fullPathWalk.parent
-            fileWalk = fullPathWalk.name
+            operations = find_all_file_operations(branch, fullPathWalk, snapshot, repo, mainline, branches, branch_renames, sscm)
 
-            versions = find_all_file_versions(branch, fullPathWalk, snapshot, sscm)
-            # TODO: Rework this insanity below. We add files in different ways depending on several
-            # variables. It would be much better if we handled these special cases above.
-            # Additionally the data base itself has columns that hold different data depending on the
-            # action performed, we should just use more columns.
-            for timestamp, action, origPath, version, author, comment, data in versions:
-                # branch operations don't follow the actionMap
-                if action == SSCMFileAction.AddToBranch:
-                    if data not in branches and data not in branch_renames:
-                        if (data not in deleted_branches):
-                            deleted_branches.append(data)
-                            sys.stderr.write("[*] Files were added to branch %s, although this branch no longer exists. Ignoring this operation.\n" % data)
-                        continue
-                    elif data not in branches and data in branch_renames:
-                        # This branch was renamed. So the addToBranch operation
-                        # should actually reference the current name.
-                        data = branch_renames[data]
-
-                    if is_snapshot_branch(data, pathWalk, sscm):
-                        branchAction = Actions.BRANCH_SNAPSHOT
-                    else:
-                        branchAction = Actions.BRANCH_BASELINE
-
-                    # Get the repo path for the branch being added to.
-                    branch_path = str(branches[data])
-
-                    # each add to branch command happens once for a new branch, but will show up on each file
-                    # that is a part of the branch added too. To ensure there are no duplicates use an empty
-                    # string for origPath (its irrelevant in the export phase for this action) and set the version
-                    # to one. We cant use None/NULL for these values as SQLITE doesn't consider NULL==NULL as a true
-                    # statement.
-                    add_record_to_database(DatabaseRecord((timestamp, branchAction, mainline, branch, branch_path, "NULL", 1, author, comment, data, str(repo))), database)
-                else:
-                    # If we are in a merge operation from a branch that was deleted
-                    # treat it as a modify, so we still see the changes in the history
-                    # TODO: consider handling this in find_all_file_versions()
-                    if actionMap[action] == Actions.FILE_MERGE and data not in branches and data not in branch_renames:
-                        action = Actions.FILE_MODIFY
-                    elif actionMap[action] == Actions.FILE_MERGE and data not in branches and data in branch_renames:
-                        # This branch was renamed. So the merge operation
-                        # should actually reference the current name.
-                        data = branch_renames[data]
-
-                    origFullPath = None
-                    if origPath:
-                        if action == SSCMFileAction.FileRenamed:
-                            origFullPath = str(pathWalk / origPath)
-                            data = str(pathWalk / data)
-                        elif action == SSCMFileAction.FileMoved:
-                            origFullPath = str(origPath / fileWalk)
-                            data = str(data / fileWalk)
-                    add_record_to_database(DatabaseRecord((timestamp, actionMap[action], mainline, branch, str(fullPathWalk), origFullPath, version, author, comment, data, str(repo))), database)
+            for op in operations:
+                add_record_to_database(op, database)
 
     sys.stderr.write("[+] Parse phase complete\n")
 
