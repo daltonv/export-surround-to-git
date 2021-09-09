@@ -211,6 +211,20 @@ class SSCM:
         self.username = username
         self.password = password
 
+# Hold all information about a Surround SCM branch
+class Branch:
+    def __init__(self, name, repo, btype, old_names):
+        self.name = name
+        self.repo = repo
+        self.btype = btype
+        self.old_names = old_names
+
+    def is_snapshot(self):
+        if self.btype == "snapshot":
+            return True
+        else:
+            return False
+
 # Hold all information from a file event returned by sscmhist.exe
 class FileEvent:
     def __init__(self, file, branch, version, timestamp, action, data, author, comment):
@@ -301,19 +315,28 @@ def find_all_branches_in_mainline_containing_path(mainline, path, sscm):
             if str(found_branch).startswith((str(path) + '/')) or found_branch == path:
                 branch_repo = pathlib.PurePosixPath(match.group(3))
                 if str(branch_repo).startswith((str(path) + '/')) or branch_repo == path:
-                    our_branches[found_branch.name] = branch_repo
-                    # Get all of this branch's old names and add them to a
-                    # dict
+                    # Get all of this branch's old names and add them to a dict
                     old_names = find_branch_renames(found_branch.name,
                                                     branch_repo,
                                                     sscm)
+
+                    branch_type = match.group(4)
+
+                    found_branch_obj = Branch(found_branch.name,
+                                              branch_repo,
+                                              branch_type,
+                                              old_names)
+
+
+                    our_branches[found_branch_obj.name] = found_branch_obj
+
                     for old_name in old_names:
                         # This shouldn't happen, but our branches list will
                         # always be small so might as well check
                         if old_name in our_old_names:
                             raise Exception("%s already in our_old_names" %
                                             old_name)
-                        our_old_names[old_name] = found_branch.name
+                        our_old_names[old_name] = found_branch_obj
 
     return our_branches, our_old_names
 
@@ -323,7 +346,8 @@ def find_all_files_in_branches_under_path(branches, sscm):
     for branch in branches:
         sys.stderr.write("[*] Looking for files in branch '%s' ...\n" % branch)
 
-        cmd = sscm.exe + ' ls -b"%s" -p"%s" -r ' % (branch, branches[branch])
+        cmd = sscm.exe + ' ls -b"%s" -p"%s" -r ' % (branch,
+                                                    branches[branch].repo)
         if sscm.username and sscm.password:
             cmd = cmd + '-y"%s":"%s" ' % (sscm.username, sscm.password)
 
@@ -332,9 +356,9 @@ def find_all_files_in_branches_under_path(branches, sscm):
         if stderrdata:
             sys.stderr.write('[*] sscm error from cmd ls: %s\n' % stderrdata)
 
-        # directories are listed on their own line, before a section of their files
-        # the last line of the output just prints the number of files found so
-        # we can ignore it.
+        # directories are listed on their own line, before a section of their
+        # files the last line of the output just prints the number of files
+        # found so we can ignore it.
         for line in lines[:-1]:
             if (line.strip())[0] == '-':
                 # This is a comment and not a file
@@ -413,7 +437,7 @@ def round_timestamp(timestamp, round_target):
     return rounded_timestamp
 
 
-def operation_from_event(event, snapshot, branches, branch_renames, mainline, repo, sscm):
+def operation_from_event(event, branches, branch_renames, mainline, repo, sscm):
     timestamp = round_timestamp(event.timestamp, 10)
     author = event.author
     comment = event.comment
@@ -456,15 +480,15 @@ def operation_from_event(event, snapshot, branches, branch_renames, mainline, re
         if data not in branches and data not in branch_renames:
             return None
         elif data not in branches and data in branch_renames:
-            data = branch_renames[data]
+            data = branch_renames[data].name
 
-        if is_snapshot_branch(data, event.file.parent, sscm):
+        if branches[data].is_snapshot():
             action = Actions.BRANCH_SNAPSHOT
         else:
             action = Actions.BRANCH_BASELINE
 
         # The path for branch operations is the root of the branch
-        path = str(branches[data])
+        path = str(branches[data].repo)
 
         # Manually set these to ensure no duplicates in the DB
         # TODO: Maybe consider a better primary key to avoid this
@@ -475,7 +499,7 @@ def operation_from_event(event, snapshot, branches, branch_renames, mainline, re
         # In case we are parsing snapshots too ignore the AddFromBranch
         # commands as these commands are already parsed by the AddToBranch from
         # source branch
-        if snapshot:
+        if branches[event.branch].is_snapshot():
             return None
 
     elif (event.action == SSCMFileAction.PromoteFromBranchWithMerge or
@@ -488,7 +512,7 @@ def operation_from_event(event, snapshot, branches, branch_renames, mainline, re
         if data not in branches and data not in branch_renames:
             action = Actions.FILE_MODIFY
         elif data not in branches and data in branch_renames:
-            data = branch_renames[data]
+            data = branch_renames[data].name
 
         # If the source branch is a snapshot, well this is just silly.
         # Snapshots should not modify anything and we can have a tag as a merge
@@ -504,7 +528,7 @@ def operation_from_event(event, snapshot, branches, branch_renames, mainline, re
     return operation
 
 
-def find_all_file_operations(branch, path, snapshot, repo, mainline, branches, branch_renames, sscm):
+def find_all_file_operations(branch, path, repo, mainline, branches, branch_renames, sscm):
     folder = path.parent
     file = path.name
     # The sscm history command is too difficult to parse corerectly so here we
@@ -558,8 +582,8 @@ def find_all_file_operations(branch, path, snapshot, repo, mainline, branches, b
         event = FileEvent(path, branch, version, timestamp, action, data,
                           author, comment)
 
-        op = operation_from_event(event, snapshot, branches, branch_renames,
-                                  mainline, repo, sscm)
+        op = operation_from_event(event, branches, branch_renames, mainline,
+                                  repo, sscm)
 
         if op:
             operations.append(op)
@@ -610,8 +634,7 @@ def cmd_parse(mainline, path, database, sscm, parse_snapshot):
 
     for branch in branches:
         # Skip snapshot branches
-        snapshot = is_snapshot_branch(branch, repo, sscm)
-        if(not parse_snapshot and snapshot):
+        if(not parse_snapshot and branches[branch].is_snapshot()):
             continue
 
         sys.stderr.write("[*] Parsing branch '%s' ...\n" % branch)
@@ -619,7 +642,7 @@ def cmd_parse(mainline, path, database, sscm, parse_snapshot):
         for fullPathWalk in filesToWalk:
             #sys.stderr.write("\n[*] \tParsing file '%s' ..." % fullPathWalk)
 
-            operations = find_all_file_operations(branch, fullPathWalk, snapshot, repo, mainline, branches, branch_renames, sscm)
+            operations = find_all_file_operations(branch, fullPathWalk, repo, mainline, branches, branch_renames, sscm)
 
             for op in operations:
                 add_record_to_database(op, database)
@@ -872,7 +895,10 @@ def process_database_record_group(c, sscm, scratchDir, default_branch, email_dom
 
             # get all files contained within snapshot
             branches_dict = {}
-            branches_dict[record.data] = record.path
+            # TODO: this is kind of hack because the parse phase uses a dict
+            # of objs. Maybe make this cleaner? IDK its not really unsafe.
+            branch_obj = Branch(record.data, record.path, "snapshot", None)
+            branches_dict[record.data] = branch_obj
             files = find_all_files_in_branches_under_path(branches_dict, sscm)
             startMark = None
             for file in files:
