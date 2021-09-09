@@ -273,7 +273,7 @@ def find_branch_renames(branch, path, sscm):
 
     # This regex only looks for the original name. We don't care about what it
     # was renamed to because we already know it ultimately becomes branch
-    r = r"Renamed from ([^\\/\*?]+) to"
+    r = r"Renamed from ([^\\\/\*?]+) to"
     mi = re.finditer(r, output, re.MULTILINE)
 
     old_names = []
@@ -287,58 +287,68 @@ def find_branch_renames(branch, path, sscm):
     return old_names
 
 
-def find_all_branches_in_mainline_containing_path(mainline, path, sscm):
-    # use the -o command on lsbranch to get a full path definition of each
-    # branch. This will help us parse later
-    cmd = sscm.exe + ' lsbranch -b"%s" -p"%s" -o ' % (mainline, path)
+def find_all_branches(mainline, root_branch, sscm):
+    # lsbranch will give us every branch under a mainline if you give it any
+    # repo in a mainline. use the -o option here to get a full path definition
+    # of each branch. This will help us parse later
+    cmd = sscm.exe + ' lsbranch -p"%s" -o ' % mainline
     if sscm.username and sscm.password:
         cmd = cmd + '-y"%s":"%s" ' % (sscm.username, sscm.password)
 
-    # This command yields branches that don't include the path specified.
-    # we can however filter out the branches by using the -o option to print
-    # the full path of each branch and manually parse incorrect branches out
-    # NOTE: don't use '-f' with this command, as it really restricts overall usage.
     branches, stderrdata = get_lines_from_sscm_cmd(cmd)
 
     if stderrdata:
-        sys.stderr.write('[*] sscm error from cmd lsbranch: %s\n' % stderrdata)
+        raise Exception('[*] sscm error from cmd lsbranch: %s\n' % stderrdata)
 
     our_branches = {}
     our_old_names = {}
+    root_repo = None
+
+    # Group 1 is the branch path (not the repo)
+    # Group 2 is the branch name (last part of the branch path)
+    # Group 3 is the branch's repo
+    # Group 4 is the branch's type
+    r = r'(.+\/?([^\/]+)) \<(.*)> \((baseline|mainline|snapshot)\)'
+
     # Parse the branches and find the branches in the path provided
     for branch in branches:
-        if branch.startswith(str(path)):
-            # Since the branch currently shows the full path we need to get the
-            # the branch name by getting only the last element in the path
-            match = re.search(r'(.+\/([^\/]+))\s\<(.+)>\s\((baseline|mainline|snapshot)\)', branch)
-            found_branch = pathlib.PurePosixPath(match.group(1))
-            if str(found_branch).startswith((str(path) + '/')) or found_branch == path:
-                branch_repo = pathlib.PurePosixPath(match.group(3))
-                if str(branch_repo).startswith((str(path) + '/')) or branch_repo == path:
-                    # Get all of this branch's old names and add them to a dict
-                    old_names = find_branch_renames(found_branch.name,
-                                                    branch_repo,
-                                                    sscm)
+        match = re.search(r, branch)
+        branch_path = pathlib.PurePosixPath(match.group(1))
+        found_match = False
 
-                    branch_type = match.group(4)
+        branch_name = branch_path.name
+        branch_repo = match.group(3)
+        branch_type = match.group(4)
 
-                    found_branch_obj = Branch(found_branch.name,
-                                              branch_repo,
-                                              branch_type,
-                                              old_names)
+        if branch_name == root_branch:
+            found_match = True
+            root_repo = branch_repo
+        else:
+            for parent in branch_path.parents:
+                if parent.name == root_branch:
+                    found_match = True
+                    break
 
+        if found_match:
+            old_names = find_branch_renames(branch_name, branch_repo, sscm)
 
-                    our_branches[found_branch_obj.name] = found_branch_obj
+            found_branch_obj = Branch(branch_name, branch_repo, branch_type,
+                                      old_names)
 
-                    for old_name in old_names:
-                        # This shouldn't happen, but our branches list will
-                        # always be small so might as well check
-                        if old_name in our_old_names:
-                            raise Exception("%s already in our_old_names" %
-                                            old_name)
-                        our_old_names[old_name] = found_branch_obj
+            our_branches[found_branch_obj.name] = found_branch_obj
 
-    return our_branches, our_old_names
+            for old_name in old_names:
+                # This shouldn't happen, but our branches list will always be
+                # small so might as well check
+                if old_name in our_old_names:
+                    raise Exception("%s already in our_old_names" %
+                                    old_name)
+                our_old_names[old_name] = found_branch_obj
+
+    if root_repo is None:
+        raise Exception('Did not find branch "%s" in mainline' % branch)
+
+    return our_branches, our_old_names, root_repo
 
 
 def find_all_files_in_branches_under_path(branches, sscm):
@@ -437,7 +447,7 @@ def round_timestamp(timestamp, round_target):
     return rounded_timestamp
 
 
-def operation_from_event(event, branches, branch_renames, mainline, repo, sscm):
+def operation_from_event(event, branches, branch_renames, main_branch, repo, sscm):
     timestamp = round_timestamp(event.timestamp, 10)
     author = event.author
     comment = event.comment
@@ -521,14 +531,14 @@ def operation_from_event(event, branches, branch_renames, mainline, repo, sscm):
         if is_snapshot_branch(data, event.file.parent, sscm):
             action = Actions.FILE_MODIFY
 
-    operation = DatabaseRecord((timestamp, action, mainline, branch, path,
+    operation = DatabaseRecord((timestamp, action, main_branch, branch, path,
                                 origPath, version, author, comment, data,
                                 str(repo)))
 
     return operation
 
 
-def find_all_file_operations(branch, path, repo, mainline, branches, branch_renames, sscm):
+def find_all_file_operations(branch, path, repo, main_branch, branches, branch_renames, sscm):
     folder = path.parent
     file = path.name
     # The sscm history command is too difficult to parse corerectly so here we
@@ -582,7 +592,7 @@ def find_all_file_operations(branch, path, repo, mainline, branches, branch_rena
         event = FileEvent(path, branch, version, timestamp, action, data,
                           author, comment)
 
-        op = operation_from_event(event, branches, branch_renames, mainline,
+        op = operation_from_event(event, branches, branch_renames, main_branch,
                                   repo, sscm)
 
         if op:
@@ -617,12 +627,11 @@ def add_record_to_database(record, database):
         database.commit()
 
 
-def cmd_parse(mainline, path, database, sscm, parse_snapshot):
+def cmd_parse(mainline, main_branch, database, sscm, parse_snapshot):
     sys.stderr.write("[+] Beginning parse phase...\n")
 
-    repo = pathlib.PurePosixPath(path)
-
-    branches, branch_renames = find_all_branches_in_mainline_containing_path(mainline, repo, sscm)
+    branches, branch_renames, repo = find_all_branches(mainline, main_branch,
+                                                       sscm)
 
     # some file operations can happen on deleted branches. Here we can mark
     # branches we find that were deleted (ie didn't show up in the above
@@ -642,7 +651,9 @@ def cmd_parse(mainline, path, database, sscm, parse_snapshot):
         for fullPathWalk in filesToWalk:
             #sys.stderr.write("\n[*] \tParsing file '%s' ..." % fullPathWalk)
 
-            operations = find_all_file_operations(branch, fullPathWalk, repo, mainline, branches, branch_renames, sscm)
+            operations = find_all_file_operations(branch, fullPathWalk, repo,
+                                                  main_branch, branches,
+                                                  branch_renames, sscm)
 
             for op in operations:
                 add_record_to_database(op, database)
@@ -1066,20 +1077,20 @@ def handle_command(parser):
 
     sscm = SSCM(args.install, args.host, args.port, args.username, args.password)
 
-    if args.command == "parse" and args.mainline and args.path:
+    if args.command == "parse" and args.mainline and args.branch:
         verify_surround_environment(sscm)
         database = create_database()
-        cmd_parse(args.mainline, args.path, database, sscm, args.snapshot)
+        cmd_parse(args.mainline, args.branch, database, sscm, args.snapshot)
     elif args.command == "export" and args.database:
         verify_surround_environment(sscm)
         database = sqlite3.connect(args.database)
-        cmd_export(database, args.email, sscm, args.branch)
-    elif args.command == "all" and args.mainline and args.path:
+        cmd_export(database, args.email, sscm, args.default)
+    elif args.command == "all" and args.mainline and args.branch:
         # typical case
         verify_surround_environment(sscm)
         database = create_database()
-        cmd_parse(args.mainline, args.path, database, sscm, args.snapshot)
-        cmd_export(database, args.email, sscm, args.branch)
+        cmd_parse(args.mainline, args.branch, database, sscm, args.snapshot)
+        cmd_export(database, args.email, sscm, args.default)
     elif args.command == "verify" and args.mainline and args.path:
         # the 'verify' operation must take place after the export has completed.
         # as such, it will always be conducted as its own separate operation.
@@ -1092,9 +1103,9 @@ def handle_command(parser):
 
 def parse_arguments():
     parser = argparse.ArgumentParser(prog='export-surround-to-git.py', description='Exports history from Seapine Surround in a format parsable by `git fast-import`.', formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('-b', '--branch', default="main", help='default branch in the git repo')
-    parser.add_argument('-m', '--mainline', help='Mainline branch containing history to export')
-    parser.add_argument('-p', '--path', help='Path containing history to export')
+    parser.add_argument('--default', default="main", help='default branch in the git repo')
+    parser.add_argument('-m', '--mainline', help='Mainline branch containing the branch to export')
+    parser.add_argument('-b', '--branch', help='Branch to export')
     parser.add_argument('-d', '--database', help='Path to local database (only used when resuming an export)')
     parser.add_argument('-u', '--username', help='Username for the scm server')
     parser.add_argument('-pw', '--password', help='Password for the scm server')
