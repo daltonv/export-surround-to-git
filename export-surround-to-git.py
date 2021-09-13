@@ -401,7 +401,11 @@ def is_snapshot_branch(branch, repo, sscm):
 
 
 def get_file_rename(version, file, repo, branch, sscm):
-    cmd = sscm.exe + ' history "%s" -b"%s" -p"%s" -v"%d:%d" ' % (file, branch, repo, version, version)
+    # Some files have '$' characters in them and need to be escaped
+    # for any of the later sscm commands to find them.
+    fixed_file = file.replace("$", "\$")
+
+    cmd = sscm.exe + ' history "%s" -b"%s" -p"%s" -v"%d:%d" ' % (fixed_file, branch, repo, version, version)
     if sscm.username and sscm.password:
         cmd += '-y"%s":"%s" ' % (sscm.username, sscm.password)
 
@@ -541,6 +545,11 @@ def operation_from_event(event, branches, branch_renames, main_branch, repo, ssc
 def find_all_file_operations(branch, path, repo, main_branch, branches, branch_renames, sscm):
     folder = path.parent
     file = path.name
+
+    # Some files have '$' characters in them and need to be escaped
+    # for any of the later sscm commands to find them.
+    file = file.replace("$", "\$")
+
     # The sscm history command is too difficult to parse corerectly so here we
     # use a tool created with the sscm API that we control
     sscmhist = pathlib.Path(sys.path[0]) / "sscmhist" / "sscmhist.exe"
@@ -715,6 +724,9 @@ def print_blob_for_file(branch, fullPath, sscm, scratchDir, timestamp=None):
 
     path = fullPath.parent
     file = fullPath.name
+    # Some files have '$' characters in them and need to be escaped
+    # for any of the later sscm commands to find them.
+    fixed_file = file.replace("$", "\$")
     localPath = scratchDir / file
     if localPath.is_file():
         localPath.unlink()
@@ -722,12 +734,12 @@ def print_blob_for_file(branch, fullPath, sscm, scratchDir, timestamp=None):
         # get specified version. You would think the -v option would get the
         # version of the file you want, but this does not work for deleted files.
         # we need to use the time stamp with -s
-        cmd = sscm.exe + ' get "%s" -b"%s" -p"%s" -d"%s" -f -i -s"%s" -e ' % (file, branch, path, scratchDir.name, time_string)
+        cmd = sscm.exe + ' get "%s" -b"%s" -p"%s" -d"%s" -f -i -s"%s" -e ' % (fixed_file, branch, path, scratchDir.name, time_string)
         if sscm.username and sscm.password:
             cmd = cmd + '-y"%s":"%s" ' % (sscm.username, sscm.password)
     else:
         # get newest version
-        cmd = sscm.exe + ' get "%s" -b"%s" -p"%s" -d"%s" -f -i -e ' % (file, branch, path, scratchDir.name)
+        cmd = sscm.exe + ' get "%s" -b"%s" -p"%s" -d"%s" -f -i -e ' % (fixed_file, branch, path, scratchDir.name)
         if sscm.username and sscm.password:
             cmd = cmd + '-y"%s":"%s" ' % (sscm.username, sscm.password)
     with open(os.devnull, 'w') as fnull:
