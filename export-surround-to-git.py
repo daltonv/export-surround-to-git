@@ -227,6 +227,12 @@ class Branch:
         else:
             return False
 
+    def is_main(self):
+        if self.btype == "main":
+            return True
+        else:
+            return False
+
 # Hold all information from a file event returned by sscmhist.exe
 class FileEvent:
     def __init__(self, file, branch, version, timestamp, action, data, author, comment):
@@ -376,6 +382,7 @@ def find_all_branches(mainline, root_branch, sscm):
         if branch_name == root_branch:
             found_match = True
             root_repo = branch_repo
+            branch_type = "main"
         else:
             for parent in branch_path.parents:
                 if parent.name == root_branch:
@@ -404,9 +411,109 @@ def find_all_branches(mainline, root_branch, sscm):
     return our_branches, our_old_names, root_repo
 
 
-def find_all_files_in_branches_under_path(branches, sscm):
-    fileSet = set()
+backtrack_searches = 0
+
+
+def find_deleted_files(branch, repo, fileSet, sscm):
+    # Use the property command to get the list of deleted files and repos.
+    # Then use property command on each item to detect if it is a file or repo
+    # If it is another repo recursively call our selves. Otherwise add the file
+    # to the fileset.
+
+    def get_property_output(branch, repo, item, sscm):
+        def make_cmd(branch, repo, item, sscm):
+            cmd = sscm.exe + ' property "%s" -b"%s" -p"%s" -d ' % (item, branch, repo)
+            if sscm.username and sscm.password:
+                cmd = cmd + '-y"%s":"%s" ' % (sscm.username, sscm.password)
+
+            return cmd
+
+        cmd = make_cmd(branch, repo, item, sscm)
+        output, stderrdata = get_lines_from_sscm_cmd(cmd, False)
+        sub_item = None
+
+        # Okay the Surround people really hate making parsable output for the
+        # sscm command. We can't guarantee we didn't get the comment as part of
+        # the item name, so we will try at most 5 times to search for the file
+        # in it. Hopfully this is rare
+        no_record = "Record not found; the selected item may not exist."
+        if stderrdata == no_record:
+            logging.debug("find_deleted_files():could not detect file from the line:\n\t%s.\n\tAttempting to search for file..." % item)
+
+            item_words = item.split(" ")
+            for i in range(1,10):
+                global backtrack_searches
+                backtrack_searches += 1
+
+                sub_item = " ".join(item_words[:i])
+                new_cmd = make_cmd(branch, repo, sub_item, sscm)
+                output, stderrdata = get_lines_from_sscm_cmd(new_cmd, False)
+
+                if not stderrdata:
+                    break
+
+                logging.debug("find_deleted_files(): Still unsuccessful with sub_item: %s", sub_item)
+
+            if stderrdata:
+                raise Exception('[*] sscm error from cmd property: %s\n' %
+                                stderrdata)
+        elif stderrdata:
+            raise Exception('[*] sscm error from cmd property: %s\n' %
+                            stderrdata)
+
+        return output, sub_item
+
+    logging.info("[*] Looking for deleted files in branch '%s' under '%s' ..." % (branch, repo))
+
+    output, sub_item = get_property_output(branch, repo, "/", sscm)
+
+    deleted_files = output[output.index("Deleted files:"):]
+
+    # Fancy regex to get the file names from the output
+    # WARNING: Surround made a reliable parse impossible because they
+    # they place comments about the deletion on the same line of the file.
+    # We get around this by saying files can have at most 2 spaces between
+    # regular characters. That should satisfy just about every file name
+    # and honestly you deserve to lose the file if you are using more than
+    # 2 spaces.
+    r_find_file = r"^  (([\w\-\.\(\)] {0,2})+)"
+
+    mi = re.finditer(r_find_file, deleted_files, re.MULTILINE)
+
+    count = 0
+
+    for m in mi:
+        # Strip to account for any trailing spaces
+        item = m.group(1).strip()
+
+        # property will output files called "None" if it didn't find anything
+        # for some reason.
+        if item == "None":
+            continue
+
+        item_output, sub_item = get_property_output(branch, repo, item, sscm)
+
+        if sub_item:
+            item = sub_item
+
+        if item_output.startswith("File name with path:"):
+            fullPath = pathlib.PurePosixPath("%s/%s" % (repo, item))
+            if fullPath not in fileSet:
+                fileSet[fullPath] = []
+            fileSet[fullPath].append(branch)
+            count += 1
+        else:
+            find_deleted_files(branch, "%s/%s" % (repo, item), fileSet, sscm)
+
+    return
+
+
+def find_all_files_in_branches(branches, skip_delete_check, parse_snapshot, sscm):
+    fileSet = {}
     for branch in branches:
+        if branches[branch].is_snapshot() and not parse_snapshot:
+            continue
+
         logging.info("[*] Looking for files in branch '%s' ..." % branch)
 
         cmd = sscm.exe + ' ls -b"%s" -p"%s" -r ' % (branch,
@@ -428,6 +535,14 @@ def find_all_files_in_branches_under_path(branches, sscm):
                 continue
             elif line[0] != ' ':
                 lastDirectory = line
+                # deleted files won't show in the ls command, so we have to
+                # handle them here for each folder we find. We can skip this
+                # part in the export phase because we don't care about deleted
+                # files there. Always skip this check for snapshots as these
+                # should be static tags.
+                if not skip_delete_check and not branches[branch].is_snapshot():
+                    find_deleted_files(branch, lastDirectory, fileSet, sscm)
+
             elif line[1] != ' ':
                 # Extract the file name for this line
                 #file = (line.strip().split())[0]
@@ -438,7 +553,10 @@ def find_all_files_in_branches_under_path(branches, sscm):
                     raise Exception("Couldn't find the filename in ls output")
                 file = line[:end_file_index].strip()
                 fullPath = pathlib.PurePosixPath("%s/%s" % (lastDirectory, file))
-                fileSet.add(fullPath)
+
+                if fullPath not in fileSet:
+                    fileSet[fullPath] = []
+                fileSet[fullPath].append(branch)
 
     return fileSet
 
@@ -626,8 +744,8 @@ def find_all_file_operations(branch, path, repo, main_branch, branches, branch_r
     if stderrdata:
         if stderrdata == ("sscm_file_history failed: Record not found; the "
                           "selected item may not exist."):
-            logging.debug('[*] sscmhistory could not find "%s" in branch "%s"'
-                          % (file, branch))
+            logging.warning('[*] sscmhistory could not find "%s" in branch "%s"'
+                            % (path, branch))
             return operations
         else:
             raise Exception('sscmhistory error: %s\n' % stderrdata)
@@ -704,7 +822,7 @@ def cmd_parse(mainline, main_branch, database, sscm, parse_snapshot):
     deleted_branches = []
 
     # NOTE how we're passing branches, not branch.  this is to detect deleted files.
-    filesToWalk = find_all_files_in_branches_under_path(branches, sscm)
+    filesToWalk = find_all_files_in_branches(branches, False, parse_snapshot, sscm)
 
     for branch in branches:
         # Skip snapshot branches
@@ -715,6 +833,9 @@ def cmd_parse(mainline, main_branch, database, sscm, parse_snapshot):
 
         for fullPathWalk in tqdm(filesToWalk, dynamic_ncols=True):
             #logging.info("\n[*] \tParsing file '%s' ..." % fullPathWalk)
+
+            if branch not in filesToWalk[fullPathWalk]:
+                continue
 
             operations = find_all_file_operations(branch, fullPathWalk, repo,
                                                   main_branch, branches,
@@ -978,7 +1099,7 @@ def process_database_record_group(c, sscm, scratchDir, default_branch, gitfi, em
             # of objs. Maybe make this cleaner? IDK its not really unsafe.
             branch_obj = Branch(record.data, record.path, "snapshot", None)
             branches_dict[record.data] = branch_obj
-            files = find_all_files_in_branches_under_path(branches_dict, sscm)
+            files = find_all_files_in_branches(branches_dict, True, True, sscm)
             startMark = None
             for file in files:
                 blobMark = print_blob_for_file(record.data, file, sscm, gitfi, scratchDir)
