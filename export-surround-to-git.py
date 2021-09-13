@@ -429,6 +429,9 @@ def get_file_rename(version, file, repo, branch, sscm):
         full_file_path = repo / file
         raise Exception("Could not find file rename info for %s" % full_file_path)
 
+    if old.lower == new.lower:
+        sys.stderr.write('\n[*] Warning "%s" has a rename in "%b" that is just a case change\n' % (file, branch))
+
     return (old, new)
 
 
