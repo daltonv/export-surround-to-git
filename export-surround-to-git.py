@@ -237,6 +237,55 @@ class FileEvent:
         self.author = author
         self.comment = comment
 
+class GitFastImport:
+    def __init__(self):
+        self.proc = subprocess.Popen(["git", "fast-import",
+                                      "--stats", "--export-marks=marks.txt"],
+                                     stdin=subprocess.PIPE,
+                                     stdout=None,
+                                     stderr=subprocess.PIPE,
+                                     cwd=os.getcwd())
+        self.running = True
+
+        rc = self.proc.poll()
+
+        if rc:
+            raise Exception("git fast-import crashed with: %s")
+
+
+    def check_rc(self):
+        rc = self.proc.poll()
+
+        if rc:
+            raise Exception("git fast-import crashed with: %s" %
+                            self.proc.stderr.read().decode("utf-8"))
+
+
+    def write(self, data):
+        if not isinstance(data, bytes):
+            raise Exception("git fast-import requires a bytes object as input")
+
+        self.check_rc()
+
+        self.proc.stdin.write(data)
+
+
+    def flush_stdin(self):
+        self.check_rc()
+
+        self.proc.stdin.flush()
+
+
+    def terminate(self):
+        self.check_rc()
+
+        outs, errs = self.proc.communicate(input=b"done")
+
+        print(errs.decode("utf-8"))
+
+        if self.proc.returncode != 0:
+            raise Exception("git fast-import crashed")
+
 
 def verify_surround_environment(sscm):
     # verify we have sscm client installed and in PATH
@@ -719,7 +768,7 @@ def translate_branch_name(name):
 
 
 # this is the function that prints most file data to the stream
-def print_blob_for_file(branch, fullPath, sscm, scratchDir, timestamp=None):
+def print_blob_for_file(branch, fullPath, sscm, gitfi, scratchDir, timestamp=None):
     global mark
 
     time_struct = time.localtime(timestamp)
@@ -760,13 +809,13 @@ def print_blob_for_file(branch, fullPath, sscm, scratchDir, timestamp=None):
     # git fast-import is very particular about the format of the blob command.
     # The data must be given in raw bytes for it to parse the files correctly.
     mark = mark + 1
-    sys.stdout.buffer.write(b'blob\n')
-    sys.stdout.buffer.write(b'mark :%d\n' % mark)
+    gitfi.write(b'blob\n')
+    gitfi.write(b'mark :%d\n' % mark)
     line = localPath.read_bytes()
-    sys.stdout.buffer.write(b'data %d\n' % len(line))
-    sys.stdout.buffer.write(line)
-    sys.stdout.buffer.write(b'\n')
-    sys.stdout.flush()
+    gitfi.write(b'data %d\n' % len(line))
+    gitfi.write(line)
+    gitfi.write(b'\n')
+    gitfi.flush_stdin()
     return mark
 
 # Surround comments don't have headers so, we need to fixup up the comment
@@ -808,13 +857,13 @@ def fixup_comment_header(comment):
     return fixed_comment
 
 
-def process_combined_commit(record_group, sscm, email_domain, scratchDir, default_branch, merge = False):
+def process_combined_commit(record_group, sscm, gitfi, email_domain, scratchDir, default_branch, merge = False):
     global mark
     unique_comments = {}
 
     for record in record_group:
         if record.action == Actions.FILE_MODIFY or record.action == Actions.FILE_MERGE:
-                blob_mark = print_blob_for_file(record.branch, pathlib.PurePosixPath(record.path), sscm, scratchDir, record.timestamp)
+                blob_mark = print_blob_for_file(record.branch, pathlib.PurePosixPath(record.path), sscm, gitfi, scratchDir, record.timestamp)
                 record.set_blob_mark(blob_mark)
         if record.comment:
             if record.comment not in unique_comments:
@@ -828,15 +877,15 @@ def process_combined_commit(record_group, sscm, email_domain, scratchDir, defaul
     branch = record.branch
     if branch == record.mainline:
         branch = default_branch
-    sys.stdout.buffer.write(("commit refs/heads/%s\n" % translate_branch_name(branch)).encode("utf-8"))
-    sys.stdout.buffer.write(("mark :%d\n" % mark).encode("utf-8"))
+    gitfi.write(("commit refs/heads/%s\n" % translate_branch_name(branch)).encode("utf-8"))
+    gitfi.write(("mark :%d\n" % mark).encode("utf-8"))
     email = ""
     if email_domain:
         email = record_group[0].author + "@" + email_domain
     else:
         email = record_group[0].author
-    sys.stdout.buffer.write(("author %s <%s> %s %s\n" % (record_group[0].author, email, record_group[0].timestamp, timezone)).encode("utf-8"))
-    sys.stdout.buffer.write(("committer %s <%s> %s %s\n" % (record_group[0].author, email, record_group[0].timestamp, timezone)).encode("utf-8"))
+    gitfi.write(("author %s <%s> %s %s\n" % (record_group[0].author, email, record_group[0].timestamp, timezone)).encode("utf-8"))
+    gitfi.write(("committer %s <%s> %s %s\n" % (record_group[0].author, email, record_group[0].timestamp, timezone)).encode("utf-8"))
     if len(unique_comments):
         full_comment = ""
         for comment, files in unique_comments.items():
@@ -849,16 +898,16 @@ def process_combined_commit(record_group, sscm, email_domain, scratchDir, defaul
                 full_comment += "\n"
 
         encoded_comment = fixup_comment_header(full_comment).encode("utf-8")
-        sys.stdout.buffer.write(b"data %d\n" % len(encoded_comment))
-        sys.stdout.buffer.write(encoded_comment)
+        gitfi.write(b"data %d\n" % len(encoded_comment))
+        gitfi.write(encoded_comment)
     else:
-        sys.stdout.buffer.write(b"data 0\n")
+        gitfi.write(b"data 0\n")
 
     if merge:
         merge_branch = record.data
         if merge_branch == record.mainline:
             merge_branch = default_branch
-        sys.stdout.buffer.write(("merge refs/heads/%s\n" % translate_branch_name(merge_branch)).encode("utf-8"))
+        gitfi.write(("merge refs/heads/%s\n" % translate_branch_name(merge_branch)).encode("utf-8"))
 
     for record in record_group:
         # fixup the paths so the root of the git repo matches the root
@@ -873,26 +922,26 @@ def process_combined_commit(record_group, sscm, email_domain, scratchDir, defaul
         if record.action == Actions.FILE_MODIFY or record.action == Actions.FILE_MERGE:
             if record.origPath and record.origPath != "NULL":
                 # looks like there was a previous rename.  use the original name.
-                sys.stdout.buffer.write(('M 100644 :%d "%s"\n' % (record.blob_mark, origPath)).encode("utf-8"))
+                gitfi.write(('M 100644 :%d "%s"\n' % (record.blob_mark, origPath)).encode("utf-8"))
             else:
                 # no previous rename.  good to use the current name.
-                sys.stdout.buffer.write(('M 100644 :%d "%s"\n' % (record.blob_mark, path)).encode("utf-8"))
+                gitfi.write(('M 100644 :%d "%s"\n' % (record.blob_mark, path)).encode("utf-8"))
         elif record.action == Actions.FILE_DELETE:
-            sys.stdout.buffer.write(('D "%s"\n' % path).encode("utf-8"))
+            gitfi.write(('D "%s"\n' % path).encode("utf-8"))
         elif record.action == Actions.FILE_RENAME:
             # NOTE we're not using record.path here, as there may have been multiple renames in the file's history
             full_data_path = pathlib.PurePosixPath(record.data)
             data = full_data_path.relative_to(repo)
-            sys.stdout.buffer.write(('R "%s" "%s"\n' % (origPath, data)).encode("utf-8"))
+            gitfi.write(('R "%s" "%s"\n' % (origPath, data)).encode("utf-8"))
         else:
             raise Exception("Unknown record action")
 
     # Flush our buffer. We are going to print a lot, so this helps everything
     # stay in the right order.
-    sys.stdout.flush()
+    gitfi.flush_stdin()
 
 
-def process_database_record_group(c, sscm, scratchDir, default_branch, email_domain = None):
+def process_database_record_group(c, sscm, scratchDir, default_branch, gitfi, email_domain = None):
     global mark
 
     # will contain a list of the MODIFY, DELETE, and RENAME records in this
@@ -913,11 +962,11 @@ def process_database_record_group(c, sscm, scratchDir, default_branch, email_dom
             # this is necessary since Surround version-controls individual files, and Git controls the state of the entire branch.
             # the purpose of this commit it to bring the branch state to match the snapshot exactly.
 
-            sys.stdout.buffer.write(b"reset TAG_FIXUP\n")
+            gitfi.write(b"reset TAG_FIXUP\n")
             parentBranch =  record.branch
             if record.branch == record.mainline:
                 parentBranch = default_branch
-            sys.stdout.buffer.write(("from refs/heads/%s\n" % translate_branch_name(parentBranch)).encode("utf-8"))
+            gitfi.write(("from refs/heads/%s\n" % translate_branch_name(parentBranch)).encode("utf-8"))
 
             # get all files contained within snapshot
             branches_dict = {}
@@ -928,53 +977,53 @@ def process_database_record_group(c, sscm, scratchDir, default_branch, email_dom
             files = find_all_files_in_branches_under_path(branches_dict, sscm)
             startMark = None
             for file in files:
-                blobMark = print_blob_for_file(record.data, file, sscm, scratchDir)
+                blobMark = print_blob_for_file(record.data, file, sscm, gitfi, scratchDir)
                 if not startMark:
                     # keep track of what mark represents the start of this snapshot data
                     startMark = blobMark
 
             mark = mark + 1
-            sys.stdout.buffer.write(b"commit TAG_FIXUP\n")
-            sys.stdout.buffer.write(b"mark :%d\n" % mark)
+            gitfi.write(b"commit TAG_FIXUP\n")
+            gitfi.write(b"mark :%d\n" % mark)
             email = ""
             if email_domain:
                 email = record.author + "@" + email_domain
             else:
                 email = record.author
-            sys.stdout.buffer.write(("author %s <%s> %s %s\n" % (record.author, email, record.timestamp, timezone)).encode("utf-8"))
-            sys.stdout.buffer.write(("committer %s <%s> %s %s\n" % (record.author, email, record.timestamp, timezone)).encode("utf-8"))
+            gitfi.write(("author %s <%s> %s %s\n" % (record.author, email, record.timestamp, timezone)).encode("utf-8"))
+            gitfi.write(("committer %s <%s> %s %s\n" % (record.author, email, record.timestamp, timezone)).encode("utf-8"))
             if record.comment:
                 comment = fixup_comment_header(record.comment).encode("utf-8")
-                sys.stdout.buffer.write(b"data %d\n" % len(comment))
-                sys.stdout.buffer.write(comment)
-                sys.stdout.buffer.write(b"\n")
+                gitfi.write(b"data %d\n" % len(comment))
+                gitfi.write(comment)
+                gitfi.write(b"\n")
             else:
-                sys.stdout.buffer.write(b"data 0\n")
+                gitfi.write(b"data 0\n")
 
             # 'deleteall' tells Git to forget about previous branch state
-            sys.stdout.buffer.write(b"deleteall\n")
+            gitfi.write(b"deleteall\n")
             # replay branch state from above-recorded marks
             iterMark = startMark
             for filePath in files:
                 # Remove the repo from the file path
                 repo = pathlib.PurePosixPath(record.repo)
                 file = filePath.relative_to(repo)
-                sys.stdout.buffer.write(("M 100644 :%d %s\n" % (iterMark, file)).encode("utf-8"))
+                gitfi.write(("M 100644 :%d %s\n" % (iterMark, file)).encode("utf-8"))
                 iterMark = iterMark + 1
             if iterMark != mark:
                 raise Exception("Marks fell out of sync while tagging '%s'." % record.data)
 
             # finally, tag our result
-            sys.stdout.buffer.write(("tag %s\n" % translate_branch_name(record.data)).encode("utf-8"))
-            sys.stdout.buffer.write(b"from TAG_FIXUP\n")
-            sys.stdout.buffer.write(("tagger %s <%s> %s %s\n" % (record.author, record.author, record.timestamp, timezone)).encode("utf-8"))
+            gitfi.write(("tag %s\n" % translate_branch_name(record.data)).encode("utf-8"))
+            gitfi.write(b"from TAG_FIXUP\n")
+            gitfi.write(("tagger %s <%s> %s %s\n" % (record.author, record.author, record.timestamp, timezone)).encode("utf-8"))
             if record.comment:
                 comment = record.comment.encode("utf-8")
-                sys.stdout.buffer.write(b"data %d\n" % len(comment))
-                sys.stdout.buffer.write(comment)
-                sys.stdout.buffer.write(b"\n")
+                gitfi.write(b"data %d\n" % len(comment))
+                gitfi.write(comment)
+                gitfi.write(b"\n")
             else:
-                sys.stdout.buffer.write(b"data 0\n")
+                gitfi.write(b"data 0\n")
 
             # save off the mapping between the tag name and the tag mark
             tagDict[record.data] = mark
@@ -982,7 +1031,7 @@ def process_database_record_group(c, sscm, scratchDir, default_branch, email_dom
         elif record.action == Actions.BRANCH_BASELINE:
             # the idea hers is to simply 'reset' to create our new branch, the name of which is contained in the 'data' field
 
-            sys.stdout.buffer.write(("reset refs/heads/%s\n" % translate_branch_name(record.data)).encode("utf-8"))
+            gitfi.write(("reset refs/heads/%s\n" % translate_branch_name(record.data)).encode("utf-8"))
             parentBranch = record.branch
             if record.branch == record.mainline:
                 parentBranch = default_branch
@@ -990,11 +1039,11 @@ def process_database_record_group(c, sscm, scratchDir, default_branch, email_dom
                 # Git won't let us refer to the tag directly (maybe this will be fixed in a future version).
                 # for now, we have to refer to the associated tag mark instead.
                 # (if this is fixed in the future, we can get rid of tagDict altogether)
-                sys.stdout.buffer.write(b"from :%d\n" % tagDict[parentBranch])
+                gitfi.write(b"from :%d\n" % tagDict[parentBranch])
             else:
                 # baseline branch
                 parentBranch = translate_branch_name(parentBranch)
-                sys.stdout.buffer.write(("from refs/heads/%s\n" % parentBranch).encode("utf-8"))
+                gitfi.write(("from refs/heads/%s\n" % parentBranch).encode("utf-8"))
 
         elif record.action == Actions.FILE_MODIFY or record.action == Actions.FILE_DELETE or record.action == Actions.FILE_RENAME:
             # this is the usual case
@@ -1012,7 +1061,7 @@ def process_database_record_group(c, sscm, scratchDir, default_branch, email_dom
 
         # Flush our buffer. We are going to print a lot, so this helps everything
         # stay in the right order.
-        sys.stdout.flush()
+        gitfi.flush_stdin()
 
     # Here we are going to combine all the record groups into a single commits
     #
@@ -1021,14 +1070,17 @@ def process_database_record_group(c, sscm, scratchDir, default_branch, email_dom
     # The rename needs to happen after or we get both names of the file after
     # merge
     for merge in merge_records:
-        process_combined_commit(merge_records[merge], sscm, email_domain, scratchDir, default_branch, True)
+        process_combined_commit(merge_records[merge], sscm, gitfi, email_domain, scratchDir, default_branch, True)
 
     if len(normal_records):
-        process_combined_commit(normal_records, sscm, email_domain, scratchDir, default_branch, False)
+        process_combined_commit(normal_records, sscm, gitfi, email_domain, scratchDir, default_branch, False)
 
 
 def cmd_export(database, email_domain, sscm, default_branch):
     sys.stderr.write("[+] Beginning export phase...\n")
+
+    # Create the git fast-import process
+    gitfi = GitFastImport()
 
     # temp directory in cwd, holds files fetched from Surround
     scratchDir = (pathlib.Path.cwd() / "scratch")
@@ -1049,7 +1101,7 @@ def cmd_export(database, email_domain, sscm, default_branch):
     records_group = []
     while record := c1.fetchone():
         c2.execute("SELECT * FROM operations WHERE timestamp == %d AND branch == '%s' ORDER BY action ASC" % (record[0], record[1]))
-        process_database_record_group(c2, sscm, scratchDir, default_branch, email_domain)
+        process_database_record_group(c2, sscm, scratchDir, default_branch, gitfi, email_domain)
         count = count + 1
         # print progress every 5 operations
         if count % 5 == 0 and record:
@@ -1057,16 +1109,19 @@ def cmd_export(database, email_domain, sscm, default_branch):
             print("progress", time.strftime('%Y-%m-%d', time.localtime(record[0])))
 
     # Make a new tag at the end to show the last surround commit
-    sys.stdout.buffer.write(b"tag surround-import\n")
-    sys.stdout.buffer.write(("from refs/heads/%s\n" % default_branch).encode("utf-8"))
-    sys.stdout.buffer.write(("tagger %s <%s> %d %s\n" % ("export-surround-to-git", "export-surround-to-git", int(time.time()), timezone)).encode("utf-8"))
+    gitfi.write(b"tag surround-import\n")
+    gitfi.write(("from refs/heads/%s\n" % default_branch).encode("utf-8"))
+    gitfi.write(("tagger %s <%s> %d %s\n" % ("export-surround-to-git", "export-surround-to-git", int(time.time()), timezone)).encode("utf-8"))
     comment = ("Last Surround SCM commit\n"
                "\n"
                "This is the last commit from the Surround SCM version of this "
                "project\n").encode("utf-8")
-    sys.stdout.buffer.write(b"data %d\n" % len(comment))
-    sys.stdout.buffer.write(comment)
-    sys.stdout.buffer.write(b"\n")
+    gitfi.write(b"data %d\n" % len(comment))
+    gitfi.write(comment)
+    gitfi.write(b"\n")
+    gitfi.flush_stdin()
+
+    gitfi.terminate()
 
     # cleanup
     try:
@@ -1131,7 +1186,7 @@ def parse_arguments():
     parser.add_argument('--email', help='Domain for the email address')
     parser.add_argument('--version', action='version', version='%(prog)s ' + VERSION)
     parser.add_argument('command', nargs='?', default='all')
-    parser.epilog = "Example flow:\n\tgit init my-new-repo\n\tcd my-new-repo\n\texport-surround-to-git.py -m Sandbox -p \"Sandbox/Merge Test\" -f blah.txt | git fast-import --stats --export-marks=marks.txt\n\t...\n\tgit repack ..."
+    parser.epilog = "Example flow:\n\tgit init my-new-repo\n\tcd my-new-repo\n\texport-surround-to-git.py -m Sandbox -p \"Sandbox/Merge Test\" -f blah.txt\n\t...\n\tgit repack ..."
     return parser
 
 
