@@ -59,6 +59,7 @@ import os
 import pathlib
 import shutil
 import math
+import logging
 
 
 #
@@ -281,7 +282,7 @@ class GitFastImport:
 
         outs, errs = self.proc.communicate(input=b"done")
 
-        print(errs.decode("utf-8"))
+        logging.info(errs.decode("utf-8"))
 
         if self.proc.returncode != 0:
             raise Exception("git fast-import crashed")
@@ -329,7 +330,7 @@ def find_branch_renames(branch, path, sscm):
 
     for m in mi:
         if m:
-            sys.stderr.write('[*] found branch "%s" had a previous name of '
+            logging.debug('[*] found branch "%s" had a previous name of '
                              '%s\n' %(branch, m.group(1)))
             old_names.append(m.group(1))
 
@@ -403,7 +404,7 @@ def find_all_branches(mainline, root_branch, sscm):
 def find_all_files_in_branches_under_path(branches, sscm):
     fileSet = set()
     for branch in branches:
-        sys.stderr.write("[*] Looking for files in branch '%s' ...\n" % branch)
+        logging.info("[*] Looking for files in branch '%s' ...\n" % branch)
 
         cmd = sscm.exe + ' ls -b"%s" -p"%s" -r ' % (branch,
                                                     branches[branch].repo)
@@ -413,7 +414,7 @@ def find_all_files_in_branches_under_path(branches, sscm):
         lines, stderrdata = get_lines_from_sscm_cmd(cmd)
 
         if stderrdata:
-            sys.stderr.write('[*] sscm error from cmd ls: %s\n' % stderrdata)
+            logging.warning('[*] sscm error from cmd ls: %s\n' % stderrdata)
 
         # directories are listed on their own line, before a section of their
         # files the last line of the output just prints the number of files
@@ -479,7 +480,7 @@ def get_file_rename(version, file, repo, branch, sscm):
         raise Exception("Could not find file rename info for %s" % full_file_path)
 
     if old.lower == new.lower:
-        sys.stderr.write('\n[*] Warning "%s" has a rename in "%b" that is just a case change\n' % (file, branch))
+        logging.warning('\n[*] Warning "%s" has a rename in "%b" that is just a case change\n' % (file, branch))
 
     return (old, new)
 
@@ -622,11 +623,11 @@ def find_all_file_operations(branch, path, repo, main_branch, branches, branch_r
     if stderrdata:
         if stderrdata == ("sscm_file_history failed: Record not found; the "
                           "selected item may not exist."):
-            sys.stderr.write('[*] sscmhistory could not find %s in branch %s\n'
+            logging.debug('[*] sscmhistory could not find "%s" in branch "%s"\n'
                              % (file, branch))
             return operations
         else:
-            raise Exception('[*] sscmhistory error: %s\n' % stderrdata)
+            raise Exception('sscmhistory error: %s\n' % stderrdata)
 
     # join the lines again so we can split on the comment delimiter Add a final
     # newline as the last comment delimiter won't have one.
@@ -679,7 +680,7 @@ def add_record_to_database(record, database):
         c.execute('''INSERT INTO operations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', record.get_tuple())
     except sqlite3.IntegrityError as e:
         # TODO is there a better way to detect duplicates?  is sqlite3.IntegrityError too wide a net?
-        #sys.stderr.write("\nDetected duplicate record %s" % str(record.get_tuple()))
+        #logging.debug("\nDetected duplicate record %s" % str(record.get_tuple()))
         pass
     database.commit()
 
@@ -689,7 +690,7 @@ def add_record_to_database(record, database):
 
 
 def cmd_parse(mainline, main_branch, database, sscm, parse_snapshot):
-    sys.stderr.write("[+] Beginning parse phase...\n")
+    logging.info("[+] Beginning parse phase...\n")
 
     branches, branch_renames, repo = find_all_branches(mainline, main_branch,
                                                        sscm)
@@ -707,10 +708,10 @@ def cmd_parse(mainline, main_branch, database, sscm, parse_snapshot):
         if(not parse_snapshot and branches[branch].is_snapshot()):
             continue
 
-        sys.stderr.write("[*] Parsing branch '%s' ...\n" % branch)
+        logging.info("[*] Parsing branch '%s' ...\n" % branch)
 
         for fullPathWalk in filesToWalk:
-            #sys.stderr.write("\n[*] \tParsing file '%s' ..." % fullPathWalk)
+            #logging.info("\n[*] \tParsing file '%s' ..." % fullPathWalk)
 
             operations = find_all_file_operations(branch, fullPathWalk, repo,
                                                   main_branch, branches,
@@ -719,7 +720,7 @@ def cmd_parse(mainline, main_branch, database, sscm, parse_snapshot):
             for op in operations:
                 add_record_to_database(op, database)
 
-    sys.stderr.write("[+] Parse phase complete\n")
+    logging.info("[+] Parse phase complete\n")
 
 
 # Surround has different naming rules for branches than Git does for branches/tags.
@@ -798,7 +799,7 @@ def print_blob_for_file(branch, fullPath, sscm, gitfi, scratchDir, timestamp=Non
         subprocess.Popen(cmd, shell=True, stdout=fnull, stderr=fnull).communicate()
 
     if not localPath.is_file():
-        sys.stderr.write("[+] Failed to download file %s from branch %s. Trying again...\n" % (fullPath, branch))
+        logging.warning("[+] Failed to download file %s from branch %s. Trying again...\n" % (fullPath, branch))
         time.sleep(3)
         with open(os.devnull, 'w') as fnull:
             subprocess.Popen(cmd, shell=True, stdout=fnull, stderr=fnull).communicate()
@@ -1077,7 +1078,7 @@ def process_database_record_group(c, sscm, scratchDir, default_branch, gitfi, em
 
 
 def cmd_export(database, email_domain, sscm, default_branch):
-    sys.stderr.write("[+] Beginning export phase...\n")
+    logging.info("[+] Beginning export phase...\n")
 
     # Create the git fast-import process
     gitfi = GitFastImport()
@@ -1106,7 +1107,7 @@ def cmd_export(database, email_domain, sscm, default_branch):
         # print progress every 5 operations
         if count % 5 == 0 and record:
             # just print the date we're currently servicing
-            print("progress", time.strftime('%Y-%m-%d', time.localtime(record[0])))
+            logging.info("progress", time.strftime('%Y-%m-%d', time.localtime(record[0])))
 
     # Make a new tag at the end to show the last surround commit
     gitfi.write(b"tag surround-import\n")
@@ -1132,7 +1133,7 @@ def cmd_export(database, email_domain, sscm, default_branch):
         # TODO why doesn't this work?  is this too early since we're piping our output, and then `git fast-import` just creates it again?
         os.remove("./.git/TAG_FIXUP")
 
-    sys.stderr.write("[+] Export complete.  Your new Git repository is ready to use.\nDon't forget to run `git repack` at some future time to improve data locality and access performance.\n\n")
+    logging.info("[+] Export complete.  Your new Git repository is ready to use.\nDon't forget to run `git repack` at some future time to improve data locality and access performance.\n\n")
 
 
 def cmd_verify(mainline, path):
@@ -1146,6 +1147,22 @@ def handle_command(parser):
     args = parser.parse_args()
 
     sscm = SSCM(args.install, args.host, args.port, args.username, args.password)
+
+    # setup logger
+    fileHandler = logging.FileHandler("test.log", mode="w")
+    fileHandler.setLevel(logging.DEBUG)
+
+    stdoutHandler = logging.StreamHandler(sys.stdout)
+    stdoutHandler.setLevel(logging.INFO)
+
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(message)s",
+        handlers=[
+            fileHandler,
+            stdoutHandler
+        ]
+    )
 
     if args.command == "parse" and args.mainline and args.branch:
         verify_surround_environment(sscm)
