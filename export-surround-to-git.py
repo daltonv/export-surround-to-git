@@ -668,7 +668,7 @@ def find_all_file_operations(branch, path, repo, main_branch, branches, branch_r
 
 def create_database():
     # database file is created in cwd
-    name = datetime.datetime.fromtimestamp(time.time()).strftime('%Y%m%d%H%M%S') + '.db'
+    name = datetime.datetime.fromtimestamp(time.time()).strftime('%Y-%m-%d-%H-%M-%S') + '.db'
     database = sqlite3.connect(name)
     c = database.cursor()
     # we intentionally avoid duplicates via the PRIMARY KEY
