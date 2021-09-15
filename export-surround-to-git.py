@@ -61,6 +61,7 @@ import shutil
 import math
 import logging
 
+from tqdm import tqdm
 
 #
 # globals
@@ -330,8 +331,8 @@ def find_branch_renames(branch, path, sscm):
 
     for m in mi:
         if m:
-            logging.debug('[*] found branch "%s" had a previous name of '
-                             '%s\n' %(branch, m.group(1)))
+            logging.info('[*] found branch "%s" had a previous name of "%s"' %
+                         (branch, m.group(1)))
             old_names.append(m.group(1))
 
     return old_names
@@ -349,6 +350,8 @@ def find_all_branches(mainline, root_branch, sscm):
 
     if stderrdata:
         raise Exception('[*] sscm error from cmd lsbranch: %s\n' % stderrdata)
+
+    logging.info('[*] Looking for subbranches of "%s" ...' % root_branch)
 
     our_branches = {}
     our_old_names = {}
@@ -404,7 +407,7 @@ def find_all_branches(mainline, root_branch, sscm):
 def find_all_files_in_branches_under_path(branches, sscm):
     fileSet = set()
     for branch in branches:
-        logging.info("[*] Looking for files in branch '%s' ...\n" % branch)
+        logging.info("[*] Looking for files in branch '%s' ..." % branch)
 
         cmd = sscm.exe + ' ls -b"%s" -p"%s" -r ' % (branch,
                                                     branches[branch].repo)
@@ -623,8 +626,8 @@ def find_all_file_operations(branch, path, repo, main_branch, branches, branch_r
     if stderrdata:
         if stderrdata == ("sscm_file_history failed: Record not found; the "
                           "selected item may not exist."):
-            logging.debug('[*] sscmhistory could not find "%s" in branch "%s"\n'
-                             % (file, branch))
+            logging.debug('[*] sscmhistory could not find "%s" in branch "%s"'
+                          % (file, branch))
             return operations
         else:
             raise Exception('sscmhistory error: %s\n' % stderrdata)
@@ -690,7 +693,7 @@ def add_record_to_database(record, database):
 
 
 def cmd_parse(mainline, main_branch, database, sscm, parse_snapshot):
-    logging.info("[+] Beginning parse phase...\n")
+    logging.info("[+] Beginning parse phase...")
 
     branches, branch_renames, repo = find_all_branches(mainline, main_branch,
                                                        sscm)
@@ -708,9 +711,9 @@ def cmd_parse(mainline, main_branch, database, sscm, parse_snapshot):
         if(not parse_snapshot and branches[branch].is_snapshot()):
             continue
 
-        logging.info("[*] Parsing branch '%s' ...\n" % branch)
+        logging.info("[*] Parsing branch '%s' ..." % branch)
 
-        for fullPathWalk in filesToWalk:
+        for fullPathWalk in tqdm(filesToWalk, dynamic_ncols=True):
             #logging.info("\n[*] \tParsing file '%s' ..." % fullPathWalk)
 
             operations = find_all_file_operations(branch, fullPathWalk, repo,
@@ -720,7 +723,7 @@ def cmd_parse(mainline, main_branch, database, sscm, parse_snapshot):
             for op in operations:
                 add_record_to_database(op, database)
 
-    logging.info("[+] Parse phase complete\n")
+    logging.info("[+] Parse phase complete")
 
 
 # Surround has different naming rules for branches than Git does for branches/tags.
@@ -1078,7 +1081,7 @@ def process_database_record_group(c, sscm, scratchDir, default_branch, gitfi, em
 
 
 def cmd_export(database, email_domain, sscm, default_branch):
-    logging.info("[+] Beginning export phase...\n")
+    logging.info("[+] Beginning export phase...")
 
     # Create the git fast-import process
     gitfi = GitFastImport()
@@ -1107,7 +1110,7 @@ def cmd_export(database, email_domain, sscm, default_branch):
         # print progress every 5 operations
         if count % 5 == 0 and record:
             # just print the date we're currently servicing
-            logging.info("progress", time.strftime('%Y-%m-%d', time.localtime(record[0])))
+            logging.info("progress %s" % time.strftime('%Y-%m-%d', time.localtime(record[0])))
 
     # Make a new tag at the end to show the last surround commit
     gitfi.write(b"tag surround-import\n")
@@ -1133,7 +1136,7 @@ def cmd_export(database, email_domain, sscm, default_branch):
         # TODO why doesn't this work?  is this too early since we're piping our output, and then `git fast-import` just creates it again?
         os.remove("./.git/TAG_FIXUP")
 
-    logging.info("[+] Export complete.  Your new Git repository is ready to use.\nDon't forget to run `git repack` at some future time to improve data locality and access performance.\n\n")
+    logging.info("[+] Export complete.  Your new Git repository is ready to use.\nDon't forget to run `git repack` at some future time to improve data locality and access performance.")
 
 
 def cmd_verify(mainline, path):
@@ -1149,7 +1152,7 @@ def handle_command(parser):
     sscm = SSCM(args.install, args.host, args.port, args.username, args.password)
 
     # setup logger
-    fileHandler = logging.FileHandler("test.log", mode="w")
+    fileHandler = logging.FileHandler("export.log", mode="w")
     fileHandler.setLevel(logging.DEBUG)
 
     stdoutHandler = logging.StreamHandler(sys.stdout)
