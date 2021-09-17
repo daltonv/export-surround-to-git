@@ -1,6 +1,7 @@
 import subprocess
 import pathlib
 import sys
+import time
 import os
 
 class SSCM:
@@ -109,13 +110,17 @@ class SSCM:
         return output, stderrdata
 
 
-    def history(self, file, version, branch, repo, get_lines=True):
+    def history(self, file, branch, repo, version=None, recursive=False, get_lines=True):
         fixed_file = self.__fix_file_name__(file)
 
-        cmd = (self.exe + ' history "%s" -b"%s" -p"%s" -v"%d:%d" ' %
-               (fixed_file, branch, repo, version, version))
+        cmd = (self.exe + ' history "%s" -b"%s" -p"%s" ' %
+               (fixed_file, branch, repo))
         if self.username and self.password:
             cmd += '-y"%s":"%s" ' % (self.username, self.password)
+        if version:
+            cmd += '-v"%d:%d" ' % (version, version)
+        if recursive:
+            cmd += '-r '
 
         output, stderrdata = self.__get_sscm_output__(cmd, get_lines)
 
