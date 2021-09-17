@@ -345,7 +345,7 @@ def find_all_branches(mainline, root_branch, sscm: SSCM):
     return our_branches, our_old_names, root_repo
 
 
-def find_deleted_files(branch, repo, fileSet, sscm):
+def find_deleted_files(branch, repo, fileSet, sscm: SSCM):
     # Use the property command to get the list of deleted files and repos.
     # Then use property command on each item to detect if it is a file or repo
     # If it is another repo recursively call our selves. Otherwise add the file
@@ -401,10 +401,7 @@ def find_deleted_files(branch, repo, fileSet, sscm):
     # and honestly you deserve to lose the file if you are using more than
     # 2 spaces.
     r_find_file = r"^  (([\w\-\.\(\)] {0,2})+)"
-
     mi = re.finditer(r_find_file, deleted_files, re.MULTILINE)
-
-    count = 0
 
     for m in mi:
         # Strip to account for any trailing spaces
@@ -425,7 +422,6 @@ def find_deleted_files(branch, repo, fileSet, sscm):
             if fullPath not in fileSet:
                 fileSet[fullPath] = []
             fileSet[fullPath].append(branch)
-            count += 1
         else:
             find_deleted_files(branch, "%s/%s" % (repo, item), fileSet, sscm)
 
