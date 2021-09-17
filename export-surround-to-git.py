@@ -47,7 +47,6 @@ VERSION = '0.5.0'
 #   * Ubuntu 14.04.1 LTS
 #   * Linux 3.13.0-35-generic #62-Ubuntu SMP Fri Aug 15 01:58:01 UTC 2014 i686 i686 i686 GNU/Linux
 
-
 import sys
 import argparse
 import subprocess
@@ -62,6 +61,8 @@ import math
 import logging
 
 from tqdm import tqdm
+
+from src.sscm import SSCM
 
 #
 # globals
@@ -204,14 +205,6 @@ class DatabaseRecord:
     def get_tuple(self):
         return (self.timestamp, self.action, self.mainline, self.branch, self.path, self.origPath, self.version, self.author, self.comment, self.data, self.repo)
 
-# Hold all the info we need to run sscm
-class SSCM:
-    def __init__(self, exe, host, port, username, password):
-        self.exe = exe
-        self.host = host
-        self.port = port
-        self.username = username
-        self.password = password
 
 # Hold all information about a Surround SCM branch
 class Branch:
@@ -232,6 +225,7 @@ class Branch:
             return True
         else:
             return False
+
 
 # Hold all information from a file event returned by sscmhist.exe
 class FileEvent:
@@ -295,36 +289,8 @@ class GitFastImport:
             raise Exception("git fast-import crashed")
 
 
-def verify_surround_environment(sscm):
-    # verify we have sscm client installed and in PATH
-    cmd = sscm.exe + " version"
-    with open(os.devnull, 'w') as fnull:
-        p = subprocess.Popen(cmd, shell=True, stdout=fnull, stderr=fnull)
-        p.communicate()
-        return (p.returncode == 0)
-
-
-def get_lines_from_sscm_cmd(sscm_cmd, split_lines=True):
-    # helper function to clean each item on a line since sscm has lots of newlines
-    p = subprocess.Popen(sscm_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    stdoutdata, stderrdata = p.communicate()
-    stdoutdata = stdoutdata.decode('utf8')
-    stderrdata = (stderrdata.strip()).decode('utf8')
-
-    if split_lines:
-        lines = [real_line for real_line in stdoutdata.splitlines() if real_line]
-    else:
-        lines = stdoutdata
-
-    return lines, stderrdata
-
-
-def find_branch_renames(branch, path, sscm):
-    cmd = sscm.exe + ' branchhistory -b"%s" -p"%s" ' % (branch, path)
-    if sscm.username and sscm.password:
-        cmd = cmd + '-y"%s":"%s" ' % (sscm.username, sscm.password)
-
-    output, stderrdata = get_lines_from_sscm_cmd(cmd, False)
+def find_branch_renames(branch, path, sscm: SSCM):
+    output, stderrdata = sscm.branchhistory(branch, path, False)
     if stderrdata:
         raise Exception(stderrdata)
 
@@ -344,16 +310,8 @@ def find_branch_renames(branch, path, sscm):
     return old_names
 
 
-def find_all_branches(mainline, root_branch, sscm):
-    # lsbranch will give us every branch under a mainline if you give it any
-    # repo in a mainline. use the -o option here to get a full path definition
-    # of each branch. This will help us parse later
-    cmd = sscm.exe + ' lsbranch -p"%s" -o ' % mainline
-    if sscm.username and sscm.password:
-        cmd = cmd + '-y"%s":"%s" ' % (sscm.username, sscm.password)
-
-    branches, stderrdata = get_lines_from_sscm_cmd(cmd)
-
+def find_all_branches(mainline, root_branch, sscm: SSCM):
+    branches, stderrdata = sscm.lsbranch(mainline)
     if stderrdata:
         raise Exception('[*] sscm error from cmd lsbranch: %s\n' % stderrdata)
 
@@ -411,25 +369,14 @@ def find_all_branches(mainline, root_branch, sscm):
     return our_branches, our_old_names, root_repo
 
 
-backtrack_searches = 0
-
-
 def find_deleted_files(branch, repo, fileSet, sscm):
     # Use the property command to get the list of deleted files and repos.
     # Then use property command on each item to detect if it is a file or repo
     # If it is another repo recursively call our selves. Otherwise add the file
     # to the fileset.
 
-    def get_property_output(branch, repo, item, sscm):
-        def make_cmd(branch, repo, item, sscm):
-            cmd = sscm.exe + ' property "%s" -b"%s" -p"%s" -d ' % (item, branch, repo)
-            if sscm.username and sscm.password:
-                cmd = cmd + '-y"%s":"%s" ' % (sscm.username, sscm.password)
-
-            return cmd
-
-        cmd = make_cmd(branch, repo, item, sscm)
-        output, stderrdata = get_lines_from_sscm_cmd(cmd, False)
+    def get_property_output(branch, repo, item, sscm: SSCM):
+        output, stderrdata = sscm.lsremoved(item, branch, repo, False)
         sub_item = None
 
         # Okay the Surround people really hate making parsable output for the
@@ -438,21 +385,21 @@ def find_deleted_files(branch, repo, fileSet, sscm):
         # in it. Hopfully this is rare
         no_record = "Record not found; the selected item may not exist."
         if stderrdata == no_record:
-            logging.debug("find_deleted_files():could not detect file from the line:\n\t%s.\n\tAttempting to search for file..." % item)
+            logging.debug("find_deleted_files():could not detect file from the"
+                          " line:\n\t%s.\n\tAttempting to search for file..." %
+                          item)
 
             item_words = item.split(" ")
             for i in range(1,10):
-                global backtrack_searches
-                backtrack_searches += 1
-
                 sub_item = " ".join(item_words[:i])
-                new_cmd = make_cmd(branch, repo, sub_item, sscm)
-                output, stderrdata = get_lines_from_sscm_cmd(new_cmd, False)
+                output, stderrdata = sscm.lsremoved(sub_item, branch, repo,
+                                                    False)
 
                 if not stderrdata:
                     break
 
-                logging.debug("find_deleted_files(): Still unsuccessful with sub_item: %s", sub_item)
+                logging.debug("find_deleted_files(): Still unsuccessful with "
+                              "sub_item: %s", sub_item)
 
             if stderrdata:
                 raise Exception('[*] sscm error from cmd property: %s\n' %
@@ -463,7 +410,8 @@ def find_deleted_files(branch, repo, fileSet, sscm):
 
         return output, sub_item
 
-    logging.info("[*] Looking for deleted files in branch '%s' under '%s' ..." % (branch, repo))
+    logging.info("[*] Looking for deleted files in branch '%s' under '%s' ..."
+                 % (branch, repo))
 
     output, sub_item = get_property_output(branch, repo, "/", sscm)
 
@@ -508,7 +456,7 @@ def find_deleted_files(branch, repo, fileSet, sscm):
     return
 
 
-def find_all_files_in_branches(branches, skip_delete_check, parse_snapshot, sscm):
+def find_all_files_in_branches(branches, skip_delete_check, parse_snapshot, sscm: SSCM):
     fileSet = {}
     for branch in branches:
         if branches[branch].is_snapshot() and not parse_snapshot:
@@ -516,15 +464,9 @@ def find_all_files_in_branches(branches, skip_delete_check, parse_snapshot, sscm
 
         logging.info("[*] Looking for files in branch '%s' ..." % branch)
 
-        cmd = sscm.exe + ' ls -b"%s" -p"%s" -r ' % (branch,
-                                                    branches[branch].repo)
-        if sscm.username and sscm.password:
-            cmd = cmd + '-y"%s":"%s" ' % (sscm.username, sscm.password)
-
-        lines, stderrdata = get_lines_from_sscm_cmd(cmd)
-
+        lines, stderrdata = sscm.ls(branch, branches[branch].repo)
         if stderrdata:
-            logging.warning('[*] sscm error from cmd ls: %s\n' % stderrdata)
+            raise Exception('sscm error from cmd ls: %s\n' % stderrdata)
 
         # directories are listed on their own line, before a section of their
         # files the last line of the output just prints the number of files
@@ -561,32 +503,19 @@ def find_all_files_in_branches(branches, skip_delete_check, parse_snapshot, sscm
     return fileSet
 
 
-def is_snapshot_branch(branch, repo, sscm):
-    # TODO can we eliminate 'repo' as an argument to this function?
-    cmd = sscm.exe + ' branchproperty -b"%s" -p"%s" ' % (branch, repo)
-    if sscm.username and sscm.password:
-            cmd = cmd + '-y"%s":"%s" ' % (sscm.username, sscm.password)
-    with open(os.devnull, 'w') as fnull:
-        result = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=fnull).communicate()[0].decode("utf8")
+def is_snapshot_branch(branch, repo, sscm: SSCM):
+    result, stderrdata = sscm.branchproperty(branch, repo, False)
+
     return result.find("snapshot") != -1
 
 
-def get_file_rename(version, file, repo, branch, sscm):
-    # Some files have '$' characters in them and need to be escaped
-    # for any of the later sscm commands to find them.
-    fixed_file = file.replace("$", "\$")
-
-    cmd = sscm.exe + ' history "%s" -b"%s" -p"%s" -v"%d:%d" ' % (fixed_file, branch, repo, version, version)
-    if sscm.username and sscm.password:
-        cmd += '-y"%s":"%s" ' % (sscm.username, sscm.password)
+def get_file_rename(version, file, repo, branch, sscm: SSCM):
+    lines, stderrdata = sscm.history(file, version, branch, repo)
+    if stderrdata:
+        raise Exception("sscm error from cmd history: %s" % stderrdata)
 
     old = None
     new = None
-
-    lines, stderrdata = get_lines_from_sscm_cmd(cmd)
-
-    if stderrdata:
-        raise Exception("sscm error from cmd history: %s" % stderrdata)
 
     # Note if for some reason there are multiple file renames in the same version
     # we will ONLY take the last file rename.
@@ -706,7 +635,7 @@ def operation_from_event(event, branches, branch_renames, main_branch, repo, ssc
         # Snapshots should not modify anything and we can have a tag as a merge
         # point, so for now just treat this as an in place modify.
         # TODO: maybe stop this and handle correctly in export phase.
-        if is_snapshot_branch(data, event.file.parent, sscm):
+        if branches[data].is_snapshot():
             action = Actions.FILE_MODIFY
 
     operation = DatabaseRecord((timestamp, action, main_branch, branch, path,
@@ -716,31 +645,12 @@ def operation_from_event(event, branches, branch_renames, main_branch, repo, ssc
     return operation
 
 
-def find_all_file_operations(branch, path, repo, main_branch, branches, branch_renames, sscm):
+def find_all_file_operations(branch, path, repo, main_branch, branches, branch_renames, sscm: SSCM):
     folder = path.parent
     file = path.name
-
-    # Some files have '$' characters in them and need to be escaped
-    # for any of the later sscm commands to find them.
-    file = file.replace("$", "\$")
-
-    # The sscm history command is too difficult to parse corerectly so here we
-    # use a tool created with the sscm API that we control
-    sscmhist = pathlib.Path(sys.path[0]) / "sscmhist" / "sscmhist.exe"
-    if not sscmhist.exists():
-        raise Exception("sscmhist does not exit. Try compiling it")
-
-    cmd = str(sscmhist) + ' %s %s ' % (sscm.host, sscm.port)
-    if sscm.username and sscm.password:
-        cmd += '%s %s ' % (sscm.username, sscm.password)
-    else:
-        # TODO handle this better
-        cmd += 'NULL NULL '
-    cmd += '"%s" "%s" "%s" "%s"' % (branch, branch, folder, file)
-
     operations = []
 
-    output, stderrdata = get_lines_from_sscm_cmd(cmd)
+    output, stderrdata = sscm.customhistory(file, branch, folder)
     if stderrdata:
         if stderrdata == ("sscm_file_history failed: Record not found; the "
                           "selected item may not exist."):
@@ -893,7 +803,7 @@ def translate_branch_name(name):
 
 
 # this is the function that prints most file data to the stream
-def print_blob_for_file(branch, fullPath, sscm, gitfi, scratchDir, timestamp=None):
+def print_blob_for_file(branch, fullPath, sscm: SSCM, gitfi, scratchDir, timestamp=None):
     global mark
 
     time_struct = time.localtime(timestamp)
@@ -901,35 +811,31 @@ def print_blob_for_file(branch, fullPath, sscm, gitfi, scratchDir, timestamp=Non
 
     path = fullPath.parent
     file = fullPath.name
-    # Some files have '$' characters in them and need to be escaped
-    # for any of the later sscm commands to find them.
-    fixed_file = file.replace("$", "\$")
     localPath = scratchDir / file
     if localPath.is_file():
         localPath.unlink()
+
     if timestamp:
         # get specified version. You would think the -v option would get the
         # version of the file you want, but this does not work for deleted files.
         # we need to use the time stamp with -s
-        cmd = sscm.exe + ' get "%s" -b"%s" -p"%s" -d"%s" -f -i -s"%s" -e ' % (fixed_file, branch, path, scratchDir.name, time_string)
-        if sscm.username and sscm.password:
-            cmd = cmd + '-y"%s":"%s" ' % (sscm.username, sscm.password)
+        time_struct = time.localtime(timestamp)
+        time_string = time.strftime("%Y%m%d%H:%M:%S", time_struct)
     else:
-        # get newest version
-        cmd = sscm.exe + ' get "%s" -b"%s" -p"%s" -d"%s" -f -i -e ' % (fixed_file, branch, path, scratchDir.name)
-        if sscm.username and sscm.password:
-            cmd = cmd + '-y"%s":"%s" ' % (sscm.username, sscm.password)
-    with open(os.devnull, 'w') as fnull:
-        subprocess.Popen(cmd, shell=True, stdout=fnull, stderr=fnull).communicate()
+        time_string = None
+
+    sscm.get(file, branch, path, scratchDir.name, time_string)
 
     if not localPath.is_file():
-        logging.warning("[+] Failed to download file %s from branch %s. Trying again...\n" % (fullPath, branch))
+        logging.warning("[+] Failed to download file %s from branch %s. "
+                        "Trying again...\n" % (fullPath, branch))
         time.sleep(3)
-        with open(os.devnull, 'w') as fnull:
-            subprocess.Popen(cmd, shell=True, stdout=fnull, stderr=fnull).communicate()
+        sscm.get(file, branch, path, scratchDir.name, time_string)
 
         if not localPath.is_file():
-            raise Exception("File %s from branch %s could not be downloaded with timestamp %s\ncmd = %s" % (fullPath, branch, time_string, cmd))
+            raise Exception("File %s from branch %s could not be downloaded "
+                            "with timestamp %s" % (fullPath, branch,
+                                                   time_string))
 
     # git fast-import is very particular about the format of the blob command.
     # The data must be given in raw bytes for it to parse the files correctly.
@@ -1289,23 +1195,19 @@ def handle_command(parser):
     )
 
     if args.command == "parse" and args.mainline and args.branch:
-        verify_surround_environment(sscm)
         database = create_database()
         cmd_parse(args.mainline, args.branch, database, sscm, args.snapshot)
     elif args.command == "export" and args.database:
-        verify_surround_environment(sscm)
         database = sqlite3.connect(args.database)
         cmd_export(database, args.email, sscm, args.default)
     elif args.command == "all" and args.mainline and args.branch:
         # typical case
-        verify_surround_environment(sscm)
         database = create_database()
         cmd_parse(args.mainline, args.branch, database, sscm, args.snapshot)
         cmd_export(database, args.email, sscm, args.default)
     elif args.command == "verify" and args.mainline and args.path:
         # the 'verify' operation must take place after the export has completed.
         # as such, it will always be conducted as its own separate operation.
-        verify_surround_environment(sscm)
         cmd_verify(args.mainline, args.path)
     else:
         parser.print_help()
