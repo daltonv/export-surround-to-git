@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#! /usr/bin/python3
 
 # export-surround-to-git.py
 #
@@ -20,32 +20,8 @@
 # with this program; if not, write to the Free Software Foundation, Inc.,
 # 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
-# TODOs
-# - dynamically find a temporary folder to store files. Python should have an os module for this
-# - try using sscm setclient to handle authentication instead of passing the password here
-# - allow the user to name the database file
-
-
-# attempt to support both Python2.6+ and Python3
-from __future__ import print_function
-from enum import unique
-
 
 VERSION = '0.5.0'
-
-
-# Environment:  For now, this script requires:
-#   * Python 2.7
-#   * Bash
-#   * sscm command-line client (in path)
-
-# Last tested using:
-#   * Python 2.7.6
-#   * GNU bash, version 4.3.11(1)-release (i686-pc-linux-gnu)
-#   * sscm command-line client version:  2013.0.0 Build 23 (Linux)
-#   * Git version 1.9.1
-#   * Ubuntu 14.04.1 LTS
-#   * Linux 3.13.0-35-generic #62-Ubuntu SMP Fri Aug 15 01:58:01 UTC 2014 i686 i686 i686 GNU/Linux
 
 import sys
 import argparse
