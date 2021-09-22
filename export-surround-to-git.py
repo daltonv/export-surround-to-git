@@ -1028,10 +1028,10 @@ def cmd_parse(mainline, main_branch, database, sscm, parse_snapshot):
         logging.info("[*] Parsing branch '%s' ..." % branch)
 
         for fullPathWalk in tqdm(filesToWalk, dynamic_ncols=True):
-            # logging.info("\n[*] \tParsing file '%s' ..." % fullPathWalk)
-
             if branch not in filesToWalk[fullPathWalk].branches:
                 continue
+
+            logging.debug("[*] \tParsing file '%s' ..." % fullPathWalk)
 
             is_folder = filesToWalk[fullPathWalk].is_folder
 
