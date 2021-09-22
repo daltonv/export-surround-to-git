@@ -568,7 +568,7 @@ def get_file_rename(timestamp, file, repo, branch, sscm: SSCM):
     # Group 1 = old name
     # Group 2 = new name
     # Group 3 = timestamp
-    r = r"from \[([\S ]+)\] to \[([\S ]+)\]\n{1,2}.*(\d{1,2}\/\d{1,2}\/\d{4} \d{1,2}:\d{1,2} (AM|PM))"
+    r = r"from \[([\S ]+)\] to \[([\S ]+)\].*\n{1,2}.*?(\d{1,2}\/\d{1,2}\/\d{4} \d{1,2}:\d{1,2} (AM|PM))"
     mi = re.finditer(r, output)
 
     for m in mi:
