@@ -611,6 +611,8 @@ def round_timestamp(timestamp, round_target):
     return rounded_timestamp
 
 
+# TODO the WHERE paramaters on this are probably ridiculous. I should update the DB
+# to have a better primary key
 def update_db_folder_renames(database):
     c0 = database.cursor()
     c1 = database.cursor()
@@ -621,12 +623,13 @@ def update_db_folder_renames(database):
     c0.execute(
         """SELECT * FROM operations
                         WHERE action == 7
-                        ORDER BY timestamp DESC"""
+                        ORDER BY timestamp ASC"""
     )
     while frename := c0.fetchone():
         rename_op = DatabaseRecord(frename)
         old_folder = rename_op.origPath
         new_folder = rename_op.data
+        sub_files_found = False
 
         logging.info(
             f"[*] Updating origPath for all files affected by the "
@@ -643,6 +646,7 @@ def update_db_folder_renames(database):
         )
         while record := c1.fetchone():
             file_path = pathlib.PurePosixPath(record[0])
+            sub_files_found = True
 
             # Loop through the previous operations on this file and update
             # their origPaths
@@ -671,7 +675,10 @@ def update_db_folder_renames(database):
                     # from the file_path
                     new_orig_path = old_folder / file_path.relative_to(new_folder)
 
-                if sub_record_op.action == Actions.FILE_RENAME:
+                if (
+                    sub_record_op.action == Actions.FILE_RENAME
+                    or sub_record_op.action == Actions.FOLDER_RENAME
+                ):
                     # Rename operations are special. We need update both
                     # origPath and data here.
                     new_rename_data = old_folder / file_rename_data.relative_to(
@@ -681,6 +688,7 @@ def update_db_folder_renames(database):
                     update_frename_tuple = (
                         str(new_orig_path),
                         str(new_rename_data),
+                        sub_record_op.action,
                         rename_op.mainline,
                         rename_op.branch,
                         str(file_path),
@@ -688,7 +696,7 @@ def update_db_folder_renames(database):
                     )
                     c3.execute(
                         """UPDATE operations SET origPath=?, data=?
-                                        WHERE (action=5) AND
+                                        WHERE action=? AND
                                               mainline=? AND
                                               branch=? AND
                                               path=? AND
@@ -715,6 +723,30 @@ def update_db_folder_renames(database):
                                               timestamp==?""",
                         update_tuple,
                     )
+
+        if not sub_files_found:
+            logging.info(
+                "[*] \tThis is a rename operation on an empty folder. Removing from DB."
+            )
+            c2.execute(
+                """DELETE FROM operations
+                            WHERE timestamp=? AND
+                                    action=? AND
+                                    mainline=? AND
+                                    branch=? AND
+                                    path=? AND
+                                    origPath=? AND
+                                    version=? AND
+                                    author=? AND
+                                    comment=? AND
+                                    data=? AND
+                                    repo=?""",
+                rename_op.get_tuple(),
+            )
+            if c2.rowcount != 1:
+                raise Exception(
+                    f"Deletion or {rename_op.path} rename record unsuccessful"
+                )
 
     database.commit()
 
