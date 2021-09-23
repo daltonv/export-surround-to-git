@@ -118,8 +118,8 @@ actionMap = {
     SSCMFileAction.AddToBranch: Actions.FILE_MODIFY,  # This doesn't feel like a modify. TODO investigate
     SSCMFileAction.AddFromBranch: Actions.FILE_MODIFY,
     SSCMFileAction.CheckIn: Actions.FILE_MODIFY,
-    SSCMFileAction.Rebase: None,
-    SSCMFileAction.RebaseWithMerge: None,
+    SSCMFileAction.Rebase: Actions.FILE_MERGE,
+    SSCMFileAction.RebaseWithMerge: Actions.FILE_MERGE,
     SSCMFileAction.Label: None,
     SSCMFileAction.AttachToDefect: None,
     SSCMFileAction.Delete: Actions.FILE_DELETE,
@@ -837,6 +837,8 @@ def add_operation_to_db(
     elif (
         event.action == SSCMFileAction.PromoteFromBranchWithMerge
         or event.action == SSCMFileAction.PromoteFromBranchWithOutMerge
+        or event.action == SSCMFileAction.Rebase
+        or event.action == SSCMFileAction.RebaseWithMerge
     ):
         # Special actions for merge operations
         data = event.data
