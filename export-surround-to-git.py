@@ -488,11 +488,11 @@ def find_deleted_files(branch, repo, file_set, sscm: SSCM):
                 file_set[fullPath] = SCMItem(fullPath, False)
             file_set[fullPath].branches.add(branch)
         else:
-            repo_path = pathlib.PurePosixPath(repo)
+            repo_path = pathlib.PurePosixPath(repo) / pathlib.PurePosixPath(item)
             if repo_path not in file_set:
                 file_set[repo_path] = SCMItem(repo_path, True)
             file_set[repo_path].branches.add(branch)
-            find_deleted_files(branch, ("%s/%s" % (repo, item)), file_set, sscm)
+            find_deleted_files(branch, str(repo_path), file_set, sscm)
 
     return
 
