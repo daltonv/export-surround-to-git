@@ -336,7 +336,7 @@ def find_branch_renames(branch, path, sscm: SSCM):
 
     # This regex only looks for the original name. We don't care about what it
     # was renamed to because we already know it ultimately becomes branch
-    r = r"Renamed from ([^\\\/\*?]+) to"
+    r = r"Renamed from ([^\\\/\*?]+?) to"
     mi = re.finditer(r, output, re.MULTILINE)
 
     old_names = []
