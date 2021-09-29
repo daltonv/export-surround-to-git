@@ -465,7 +465,7 @@ def find_deleted_files(branch, repo, file_set, sscm: SSCM):
     # regular characters. That should satisfy just about every file name
     # and honestly you deserve to lose the file if you are using more than
     # 2 spaces.
-    r_find_file = r"^  (([\w\-\.\(\)\^] {0,2})+)"
+    r_find_file = r"^  (([^\\\/\:\*\?\"\<\>\| \n\r] {0,2})+)"
     mi = re.finditer(r_find_file, deleted_files, re.MULTILINE)
 
     for m in mi:
@@ -568,7 +568,7 @@ def get_file_rename(timestamp, file, repo, branch, sscm: SSCM):
     # Group 1 = old name
     # Group 2 = new name
     # Group 3 = timestamp
-    r = r"from \[([\S ]+)\] to \[([\S ]+)\].*\n{1,2}.*?(\d{1,2}\/\d{1,2}\/\d{4} \d{1,2}:\d{1,2} (AM|PM))"
+    r = r"from \[([\S ]+)\] to \[([\S ]+)\].*\n{0,2}.*?(\d{1,2}\/\d{1,2}\/\d{4} \d{1,2}:\d{1,2} (AM|PM))"
     mi = re.finditer(r, output)
 
     for m in mi:
