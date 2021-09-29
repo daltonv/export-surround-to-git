@@ -633,7 +633,8 @@ def update_db_folder_renames(database):
 
         logging.info(
             f"[*] Updating origPath for all files affected by the "
-            f"rename of {old_folder} to {new_folder}"
+            f"rename of '{old_folder}' to '{new_folder}' under branch "
+            f"'{rename_op.branch}'"
         )
 
         # Now get a list of all files under this folder that is being renamed
@@ -653,7 +654,8 @@ def update_db_folder_renames(database):
             c2.execute(
                 f"""SELECT * FROM operations
                                 WHERE path == '{file_path}' and
-                                      timestamp < {rename_op.timestamp}
+                                      timestamp < {rename_op.timestamp} and
+                                      branch == "{rename_op.branch}"
                                 ORDER BY timestamp DESC"""
             )
             while sub_record := c2.fetchone():
