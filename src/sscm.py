@@ -49,6 +49,7 @@ class SSCM:
         # helper function to fix up any file names that will throw off the
         # sscm tool with escape sequences.
         fixed_file = file.replace("$", "\$")
+        fixed_file = fixed_file.replace("~", "\~")
         return fixed_file
 
     def ls(self, branch, repo, get_lines=True):
@@ -73,7 +74,9 @@ class SSCM:
         return output, stderrdata
 
     def lsremoved(self, item, branch, repo, get_lines=True):
-        cmd = self.exe + ' property "%s" -b"%s" -p"%s" -d ' % (item, branch, repo)
+        fixed_item = self.__fix_file_name__(item)
+
+        cmd = self.exe + ' property "%s" -b"%s" -p"%s" -d ' % (fixed_item, branch, repo)
         if self.username and self.password:
             cmd += '-y"%s":"%s" ' % (self.username, self.password)
 
