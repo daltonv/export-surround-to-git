@@ -757,7 +757,7 @@ def update_db_folder_renames(database):
 def add_operation_to_db(
     event: Event, branches, branch_renames, main_branch, repo, database, sscm
 ):
-    timestamp = round_timestamp(event.timestamp, 10)
+    timestamp = round_timestamp(event.timestamp, 5)
     author = event.author
     comment = event.comment
     branch = event.branch
@@ -857,8 +857,12 @@ def add_operation_to_db(
         # Snapshots should not modify anything and we can have a tag as a merge
         # point, so for now just treat this as an in place modify.
         # TODO: maybe stop this and handle correctly in export phase.
-        if branches[data].is_snapshot():
+        if data in branches and branches[data].is_snapshot():
             action = Actions.FILE_MODIFY
+
+    # The action is not something with a git equivalent
+    if not action:
+        return
 
     operation = DatabaseRecord(
         (
