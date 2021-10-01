@@ -227,10 +227,13 @@ class DatabaseRecord:
 
 # Hold all information about a Surround SCM branch
 class Branch:
-    def __init__(self, name, repo, btype, old_names):
+    def __init__(self, name, repo, btype, parent, timestamp, comment, old_names):
         self.name = name
         self.repo = repo
         self.btype = btype
+        self.parent = parent
+        self.timestamp = timestamp
+        self.comment = comment
         self.old_names = old_names
 
     def is_snapshot(self):
@@ -353,6 +356,34 @@ def find_branch_renames(branch, path, sscm: SSCM):
     return old_names
 
 
+def get_branch_properties(branch, repo, sscm: SSCM):
+    output, stderrdata = sscm.branchproperty(branch, repo, False)
+    if stderrdata:
+        raise Exception(stderrdata)
+
+    r = r"Created: *(\d{1,2}\/\d{1,2}\/\d{4} \d{1,2}:\d{1,2} (PM|AM))"
+    m = re.search(r, output)
+    if not m:
+        raise Exception(f"Could not find creation time for branch {branch}")
+
+    time_string = m.group(1)
+    time_struct = time.strptime(time_string, "%m/%d/%Y %I:%M %p")
+
+    timestamp = int(time.mktime(time_struct))
+
+    r = r"Comments: *([^\r\n]*)"
+    m = re.search(r, output)
+    if not m:
+        raise Exception(f"Could not find the comments field for branch {branch}")
+
+    if m.group(1):
+        comment = m.group(1)
+    else:
+        comment = ""
+
+    return timestamp, comment
+
+
 def find_all_branches(mainline, root_branch, sscm: SSCM):
     branches, stderrdata = sscm.lsbranch(mainline)
     if stderrdata:
@@ -392,8 +423,19 @@ def find_all_branches(mainline, root_branch, sscm: SSCM):
 
         if found_match:
             old_names = find_branch_renames(branch_name, branch_repo, sscm)
+            creation_timestamp, comment = get_branch_properties(
+                branch_name, branch_repo, sscm
+            )
 
-            found_branch_obj = Branch(branch_name, branch_repo, branch_type, old_names)
+            found_branch_obj = Branch(
+                branch_name,
+                branch_repo,
+                branch_type,
+                branch_path.parent.name,
+                creation_timestamp,
+                comment,
+                old_names,
+            )
 
             our_branches[found_branch_obj.name] = found_branch_obj
 
@@ -1031,7 +1073,7 @@ def cmd_parse(mainline, main_branch, database, sscm, parse_snapshot):
 
     branches, branch_renames, repo = find_all_branches(mainline, main_branch, sscm)
 
-    saved_file_list = pathlib.Path(f"{mainline}_file_list.json")
+    saved_file_list = pathlib.Path(f"{main_branch}_file_list.json")
 
     if not saved_file_list.exists():
         files_to_parse = find_all_files_in_branches(
@@ -1388,7 +1430,9 @@ def process_database_record_group(
             branches_dict = {}
             # TODO: this is kind of hack because the parse phase uses a dict
             # of objs. Maybe make this cleaner? IDK its not really unsafe.
-            branch_obj = Branch(record.data, record.path, "snapshot", None)
+            branch_obj = Branch(
+                record.data, record.path, "snapshot", None, None, None, None
+            )
             branches_dict[record.data] = branch_obj
             files = find_all_files_in_branches(branches_dict, True, True, sscm)
             startMark = None
