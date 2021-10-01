@@ -986,7 +986,7 @@ def create_database():
     c = database.cursor()
     # we intentionally avoid duplicates via the PRIMARY KEY
     c.execute(
-        """CREATE TABLE operations (timestamp INTEGER NOT NULL, action INTEGER NOT NULL, mainline TEXT NOT NULL, branch TEXT NOT NULL, path TEXT, origPath TEXT, version INTEGER, author TEXT, comment TEXT, data TEXT, repo TEXT NOT NULL, PRIMARY KEY(action, mainline, branch, path, origPath, version, author, data))"""
+        """CREATE TABLE operations (timestamp INTEGER NOT NULL, action INTEGER NOT NULL, mainline TEXT NOT NULL, branch TEXT NOT NULL, path TEXT, origPath TEXT, version INTEGER, author TEXT, comment TEXT, data TEXT, repo TEXT NOT NULL, PRIMARY KEY(timestamp, action, branch, path))"""
     )
     database.commit()
     return database
@@ -1000,8 +1000,13 @@ def add_record_to_database(record, database):
             record.get_tuple(),
         )
     except sqlite3.IntegrityError:
-        # TODO is there a better way to detect duplicates?  is sqlite3.IntegrityError too wide a net?
-        # logging.debug("Detected duplicate record %s" % str(record.get_tuple()))
+        # We expect duplicates of other branch actions, but other action types shouldn't
+        # have duplicates.
+        if not (
+            record.action == Actions.BRANCH_SNAPSHOT
+            or record.action == Actions.BRANCH_BASELINE
+        ):
+            logging.debug("Detected duplicate record %s" % str(record.get_tuple()))
         pass
     database.commit()
 
