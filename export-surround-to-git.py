@@ -1626,7 +1626,7 @@ def handle_command(parser):
     sscm = SSCM(args.install, args.host, args.port, args.username, args.password)
 
     # setup logger
-    fileHandler = logging.FileHandler("export.log", mode="w")
+    fileHandler = logging.FileHandler("export.log", mode="a")
     fileHandler.setLevel(logging.DEBUG)
 
     stdoutHandler = logging.StreamHandler(sys.stdout)
