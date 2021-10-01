@@ -33,6 +33,7 @@ import pathlib
 import shutil
 import math
 import logging
+import jsonpickle
 
 from tqdm import tqdm
 
@@ -245,7 +246,7 @@ class Branch:
             return False
 
 
-class SCMItem:
+class SCMItem(object):
     def __init__(self, path: pathlib.PurePosixPath, is_folder):
         self.path = path
         self.is_folder = is_folder
@@ -1021,8 +1022,20 @@ def cmd_parse(mainline, main_branch, database, sscm, parse_snapshot):
 
     branches, branch_renames, repo = find_all_branches(mainline, main_branch, sscm)
 
-    filesToWalk = find_all_files_in_branches(branches, False, parse_snapshot, sscm)
-    find_folder_renames(branches, filesToWalk, sscm)
+    saved_file_list = pathlib.Path(f"{mainline}_file_list.json")
+
+    if not saved_file_list.exists():
+        files_to_parse = find_all_files_in_branches(
+            branches, False, parse_snapshot, sscm
+        )
+        find_folder_renames(branches, files_to_parse, sscm)
+
+        # save_files_dict_to_json(filesToWalk)
+        frozen = jsonpickle.encode(files_to_parse, indent=4)
+        saved_file_list.write_text(frozen)
+    else:
+        logging.info("[*] Saved file list found. Loading and skipping file parse...")
+        files_to_parse = jsonpickle.decode(saved_file_list.read_text())
 
     for branch in branches:
         # Skip snapshot branches
@@ -1031,15 +1044,17 @@ def cmd_parse(mainline, main_branch, database, sscm, parse_snapshot):
 
         logging.info("[*] Parsing branch '%s' ..." % branch)
 
-        for fullPathWalk in tqdm(filesToWalk, dynamic_ncols=True):
-            if branch not in filesToWalk[fullPathWalk].branches:
+        for file in tqdm(files_to_parse, dynamic_ncols=True):
+            file_obj = files_to_parse[file]
+
+            if branch not in file_obj.branches:
                 continue
 
-            logging.debug("[*] \tParsing file '%s' ..." % fullPathWalk)
+            logging.debug("[*] \tParsing file '%s' ..." % file_obj.path)
 
-            is_folder = filesToWalk[fullPathWalk].is_folder
+            is_folder = file_obj.is_folder
 
-            events = find_all_file_events(branch, fullPathWalk, is_folder, sscm)
+            events = find_all_file_events(branch, file_obj.path, is_folder, sscm)
             for ev in events:
                 add_operation_to_db(
                     ev, branches, branch_renames, main_branch, repo, database, sscm
@@ -1613,7 +1628,10 @@ def handle_command(parser):
     )
 
     if args.command == "parse" and args.mainline and args.branch:
-        database = create_database()
+        if args.database:
+            database = sqlite3.connect(args.database)
+        else:
+            database = create_database()
         cmd_parse(args.mainline, args.branch, database, sscm, args.snapshot)
     elif args.command == "export" and args.database:
         database = sqlite3.connect(args.database)
