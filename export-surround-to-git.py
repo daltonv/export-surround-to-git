@@ -371,13 +371,15 @@ def get_branch_properties(branch, repo, sscm: SSCM):
 
     timestamp = int(time.mktime(time_struct))
 
-    r = r"Comments: *([^\r\n]*)"
+    r = r"Comments: *((.|[\r\n])*)This branch uses the overall"
     m = re.search(r, output)
     if not m:
         raise Exception(f"Could not find the comments field for branch {branch}")
 
     if m.group(1):
-        comment = m.group(1)
+        comment = m.group(1).strip()
+        # Get rid of windows \r. We only parse "\n" elsewhere.
+        comment = comment.replace("\r", "")
     else:
         comment = ""
 
@@ -611,7 +613,7 @@ def get_file_rename(timestamp, file, repo, branch, sscm: SSCM):
     # Group 1 = old name
     # Group 2 = new name
     # Group 3 = timestamp
-    r = r"from \[([\S ]+)\] to \[([\S ]+)\].*\n{0,2}.*?(\d{1,2}\/\d{1,2}\/\d{4} \d{1,2}:\d{1,2} (AM|PM))"
+    r = r"from \[([\S ]+)\] to \[([\S ]+)\].*?\n{0,2}.*?(\d{1,2}\/\d{1,2}\/\d{4} \d{1,2}:\d{1,2} (AM|PM))"
     mi = re.finditer(r, output)
 
     for m in mi:
@@ -855,29 +857,85 @@ def add_operation_to_db(
         # wont have the data to complete it in the export phase,
         # but if the source branch was just renamed fixup the name
         if data not in branches and data not in branch_renames:
-            return None
+            return
         elif data not in branches and data in branch_renames:
             data = branch_renames[data].name
 
-        if branches[data].is_snapshot():
-            action = Actions.BRANCH_SNAPSHOT
+        target_branch_obj = branches[data]
+
+        event_timestamp_struct = time.localtime(event.timestamp)
+        event_timestamp_seconds = event_timestamp_struct.tm_sec
+        event_timestamp_no_seconds = event.timestamp - event_timestamp_seconds
+
+        if (
+            target_branch_obj.timestamp == event_timestamp_no_seconds
+            and target_branch_obj.comment == comment
+        ):
+            c = database.cursor()
+            update_tuple = (
+                timestamp,
+                author,
+                target_branch_obj.timestamp,
+                branch,
+                target_branch_obj.repo,
+                target_branch_obj.name,
+                Actions.BRANCH_BASELINE,
+                Actions.BRANCH_SNAPSHOT,
+            )
+            c.execute(
+                """UPDATE operations SET timestamp=?, author=?
+                            WHERE timestamp==? AND
+                                  branch==? AND
+                                  path==? AND
+                                  data==? AND
+                                  (action==? OR
+                                   action==?)""",
+                update_tuple,
+            )
+            if c.rowcount != 1:
+                raise Exception("Could not update branch creation operation")
+            database.commit()
+
+            # update branch_obj and SQL record with correct timestamp
+            branches[data].timestamp = timestamp
+
+            # Nothing actually needs to be added to the DB in this case. We just needed
+            # to update the creation time and author.
+            return
+
+        elif (
+            target_branch_obj.timestamp == timestamp
+            and target_branch_obj.comment == comment
+        ):
+            # We already took care of the timstamp and author update. We can just ignore
+            # this add to branch action now.
+            return
+
+        elif target_branch_obj.timestamp > timestamp:
+            logging.debug(
+                f'File "{path}" is being added to branch '
+                f'"{target_branch_obj.name}" before it is created. Ignoring...'
+            )
+            return
+
         else:
-            action = Actions.BRANCH_BASELINE
+            # This AddToBranch action is actually a merge FROM the branch of this event
+            # TO the branch in data.
+            temp_branch = branch
+            branch = data
+            if branches[branch].is_snapshot():
+                logging.debug(f"Merge occuring on snapshot branch '{branch}' ignoring")
+                return
 
-        # The path for branch operations is the root of the branch
-        path = str(branches[data].repo)
-
-        # Manually set these to ensure no duplicates in the DB
-        # TODO: Maybe consider a better primary key to avoid this
-        version = 0
-        origPath = "NULL"
+            data = temp_branch
+            action = Actions.FILE_MERGE
 
     elif event.action == SSCMFileAction.AddFromBranch:
         # In case we are parsing snapshots too ignore the AddFromBranch
         # commands as these commands are already parsed by the AddToBranch from
         # source branch
         if branches[event.branch].is_snapshot():
-            return None
+            return
 
     elif (
         event.action == SSCMFileAction.PromoteFromBranchWithMerge
@@ -925,6 +983,39 @@ def add_operation_to_db(
     add_record_to_database(operation, database)
 
 
+def add_branch_creation_to_database(branch_obj: Branch, main_branch, repo, database):
+    timestamp = branch_obj.timestamp
+    author = ""
+    comment = branch_obj.comment
+    branch = branch_obj.parent
+    path = branch_obj.repo
+    if branch_obj.is_snapshot():
+        action = Actions.BRANCH_SNAPSHOT
+    else:
+        action = Actions.BRANCH_BASELINE
+    version = 0
+    origPath = None
+    data = branch_obj.name
+
+    operation = DatabaseRecord(
+        (
+            timestamp,
+            action,
+            main_branch,
+            branch,
+            path,
+            origPath,
+            version,
+            author,
+            comment,
+            data,
+            str(repo),
+        )
+    )
+
+    add_record_to_database(operation, database)
+
+
 def find_all_file_events(branch, path, is_folder, sscm: SSCM):
     events = []
 
@@ -935,7 +1026,7 @@ def find_all_file_events(branch, path, is_folder, sscm: SSCM):
         file = path.name
         folder = path.parent
 
-    output, stderrdata = sscm.customhistory(file, branch, folder)
+    output, stderrdata = sscm.customhistory(file, branch, folder, False)
     if stderrdata:
         if stderrdata == (
             "sscm_file_history failed: Record not found; the "
@@ -952,11 +1043,11 @@ def find_all_file_events(branch, path, is_folder, sscm: SSCM):
     if not output:
         return events
 
-    # join the lines again so we can split on the comment delimiter Add a final
-    # newline as the last comment delimiter won't have one.
-    output = "\n".join(output) + "\n"
+    # Get rid of the stupid windows carriage return. It's much easier to parse with
+    # just one newline character.
+    output = output.replace("\r", "")
 
-    file_events = output.split("--END_COMMENT--\n")
+    file_events = output.split("--END_COMMENT--\n\n")
 
     for ev in file_events:
         # the last operation might be empty due to how we split above. so we
@@ -1044,11 +1135,7 @@ def add_record_to_database(record, database):
     except sqlite3.IntegrityError:
         # We expect duplicates of other branch actions, but other action types shouldn't
         # have duplicates.
-        if not (
-            record.action == Actions.BRANCH_SNAPSHOT
-            or record.action == Actions.BRANCH_BASELINE
-        ):
-            logging.debug("Detected duplicate record %s" % str(record.get_tuple()))
+        logging.debug("Detected duplicate record %s" % str(record.get_tuple()))
         pass
     database.commit()
 
@@ -1088,24 +1175,36 @@ def cmd_parse(mainline, main_branch, database, sscm, parse_snapshot):
         logging.info("[*] Saved file list found. Loading and skipping file parse...")
         files_to_parse = jsonpickle.decode(saved_file_list.read_text())
 
+    logging.info("[*] Adding branch creation operations to database...")
     for branch in branches:
+        branch_obj = branches[branch]
+
+        # Our root branch won't have a branch creation op
+        if not branch_obj.is_main():
+            add_branch_creation_to_database(branch_obj, main_branch, repo, database)
+
+    for branch in branches:
+        branch_obj = branches[branch]
+
         # Skip snapshot branches
-        if not parse_snapshot and branches[branch].is_snapshot():
+        if not parse_snapshot and branch_obj.is_snapshot():
             continue
 
-        logging.info("[*] Parsing branch '%s' ..." % branch)
+        logging.info("[*] Parsing branch '%s' ..." % branch_obj.name)
 
         for file in tqdm(files_to_parse, dynamic_ncols=True):
             file_obj = files_to_parse[file]
 
-            if branch not in file_obj.branches:
+            if branch_obj.name not in file_obj.branches:
                 continue
 
             logging.debug("[*] \tParsing file '%s' ..." % file_obj.path)
 
             is_folder = file_obj.is_folder
 
-            events = find_all_file_events(branch, file_obj.path, is_folder, sscm)
+            events = find_all_file_events(
+                branch_obj.name, file_obj.path, is_folder, sscm
+            )
             for ev in events:
                 add_operation_to_db(
                     ev, branches, branch_renames, main_branch, repo, database, sscm
@@ -1510,7 +1609,8 @@ def process_database_record_group(
             tagDict[record.data] = mark
 
         elif record.action == Actions.BRANCH_BASELINE:
-            # the idea hers is to simply 'reset' to create our new branch, the name of which is contained in the 'data' field
+            # the idea hers is to simply 'reset' to create our new branch, the name of
+            # which is contained in the 'data' field
 
             gitfi.write(
                 ("reset refs/heads/%s\n" % translate_branch_name(record.data)).encode(
@@ -1598,6 +1698,8 @@ def cmd_export(database, email_domain, sscm, default_branch):
     c1.execute(
         """SELECT timestamp, branch FROM operations GROUP BY timestamp, branch, author ORDER BY timestamp ASC"""
     )
+
+    gitfi.write(b"reset refs/heads/main\n")
 
     count = 0
     while record := c1.fetchone():
