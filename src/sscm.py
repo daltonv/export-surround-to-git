@@ -132,6 +132,10 @@ class SSCM:
 
         output, stderrdata = self.__get_sscm_output__(cmd, get_lines)
 
+        if stderrdata == "sscm_connect failed: Communication error":
+            time.sleep(10)
+            output, stderrdata = self.__get_sscm_output__(cmd, get_lines)
+
         return output, stderrdata
 
     def get(self, file, branch, repo, scratchDir, time_string=None, get_lines=True):

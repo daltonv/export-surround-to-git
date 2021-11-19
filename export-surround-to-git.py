@@ -65,6 +65,8 @@ class Actions:
     FILE_RENAME = 5
     FILE_MERGE = 6
     FOLDER_RENAME = 7
+    FILE_MERGE_ADD = 8
+    FILE_MOVE = 9
 
 
 # similar to the SSCMFileAction enum from the API
@@ -124,7 +126,7 @@ actionMap = {
     SSCMFileAction.Label: None,
     SSCMFileAction.AttachToDefect: None,
     SSCMFileAction.Delete: Actions.FILE_DELETE,
-    SSCMFileAction.Undelete: None,
+    SSCMFileAction.Undelete: Actions.FILE_MODIFY,
     SSCMFileAction.PromoteToBranch: None,
     SSCMFileAction.PromoteFromBranchWithMerge: Actions.FILE_MERGE,
     SSCMFileAction.PromoteFromBranchWithOutMerge: Actions.FILE_MERGE,
@@ -149,7 +151,7 @@ actionMap = {
     SSCMFileAction.AttachToTestCase: None,
     SSCMFileAction.AttachToRequirement: None,
     SSCMFileAction.DuplicateChanges: None,
-    SSCMFileAction.FileMoved: Actions.FILE_RENAME,
+    SSCMFileAction.FileMoved: Actions.FILE_MOVE,
     SSCMFileAction.RepoMoved: Actions.FOLDER_RENAME,
     SSCMFileAction.AttachedToExternal: None,
     SSCMFileAction.RollbackChanges: None,
@@ -272,6 +274,7 @@ class FileEvent:
         author,
         comment,
         is_folder,
+        rename_count,
     ):
         self.file = file
         self.branch = branch
@@ -282,6 +285,7 @@ class FileEvent:
         self.author = author
         self.comment = comment
         self.is_folder = is_folder
+        self.rename_count = rename_count
 
 
 class GitFastImport:
@@ -595,7 +599,7 @@ def is_snapshot_branch(branch, repo, sscm: SSCM):
     return result.find("snapshot") != -1
 
 
-def get_file_rename(timestamp, file, repo, branch, sscm: SSCM):
+def get_file_rename(timestamp, file, repo, branch, rename_num: int, sscm: SSCM):
     output, stderrdata = sscm.history(file, branch, repo, get_lines=False)
     if stderrdata:
         raise Exception("sscm error from cmd history: %s" % stderrdata)
@@ -613,15 +617,19 @@ def get_file_rename(timestamp, file, repo, branch, sscm: SSCM):
     # Group 1 = old name
     # Group 2 = new name
     # Group 3 = timestamp
-    r = r"from \[([\S ]+)\] to \[([\S ]+)\].*?\n{0,2}.*?(\d{1,2}\/\d{1,2}\/\d{4} \d{1,2}:\d{1,2} (AM|PM))"
-    mi = re.finditer(r, output)
+    r = r"from \[([\S ]+)\] to \[([\S \n]+?)\][\s\S]*?(\d{1,2}\/\d{1,2}\/\d{4} \d{1,2}:\d{1,2} (AM|PM))$"
+    mi = re.finditer(r, output, re.MULTILINE)
+
+    count = 0
 
     for m in mi:
+        count += 1
+
         rename_timestamp_str = m.group(3)
         renamed_timestamp_struct = time.strptime(
             rename_timestamp_str, "%m/%d/%Y %I:%M %p"
         )
-        if renamed_timestamp_struct == timestamp_struct:
+        if renamed_timestamp_struct == timestamp_struct and count == rename_num:
             old = m.group(1)
             new = m.group(2)
             break
@@ -656,8 +664,6 @@ def round_timestamp(timestamp, round_target):
     return rounded_timestamp
 
 
-# TODO the WHERE paramaters on this are probably ridiculous. I should update the DB
-# to have a better primary key
 def update_db_folder_renames(database):
     c0 = database.cursor()
     c1 = database.cursor()
@@ -799,7 +805,14 @@ def update_db_folder_renames(database):
 
 
 def add_operation_to_db(
-    event: Event, branches, branch_renames, main_branch, repo, database, sscm
+    event: Event,
+    next_event: Event,
+    branches,
+    branch_renames,
+    main_branch,
+    repo,
+    database,
+    sscm,
 ):
     timestamp = round_timestamp(event.timestamp, 5)
     author = event.author
@@ -818,6 +831,9 @@ def add_operation_to_db(
         or event.action == SSCMFileAction.RepoRenamed
         or event.action == SSCMFileAction.RepoMoved
     ):
+        # ignore this change because the next event rolls us back
+        if next_event and next_event.action == SSCMFileAction.RollbackChanges:
+            return None
 
         if event.is_folder:
             file = "/"
@@ -831,7 +847,7 @@ def add_operation_to_db(
         # that calls 'sscm history'. Finding just the rename info is
         # relatively safe by parsing the output with regex.
         (oldName, newName) = get_file_rename(
-            event.timestamp, file, folder, event.branch, sscm
+            event.timestamp, file, folder, event.branch, event.rename_count, sscm
         )
         newName_p = pathlib.PurePosixPath(newName)
         oldName_p = pathlib.PurePosixPath(oldName)
@@ -845,9 +861,23 @@ def add_operation_to_db(
         elif event.action == SSCMFileAction.RepoMoved:
             origPath = str(oldName_p / event.file.name)
             data = str(newName_p / event.file.name)
-        else:
+        elif event.action == SSCMFileAction.FileMoved:
             origPath = str(oldName_p / file)
             data = str(newName_p / file)
+
+            c0 = database.cursor()
+            c0.execute(
+                """SELECT timestamp FROM operations
+                                WHERE timestamp < ? AND
+                                      path == ? AND
+                                      branch == ? AND
+                                      action == ?""",
+                (event.timestamp, str(event.file), event.branch, Actions.FILE_RENAME),
+            )
+            if c0.fetchone() is not None:
+                logging.warning(
+                    f'File "{event.file}" from branch "{event.branch}" has a rename BEFORE a move'
+                )
 
     elif event.action == SSCMFileAction.AddToBranch:
         # Special actions for branch operations
@@ -928,7 +958,7 @@ def add_operation_to_db(
                 return
 
             data = temp_branch
-            action = Actions.FILE_MERGE
+            action = Actions.FILE_MERGE_ADD
 
     elif event.action == SSCMFileAction.AddFromBranch:
         # In case we are parsing snapshots too ignore the AddFromBranch
@@ -980,7 +1010,7 @@ def add_operation_to_db(
         )
     )
 
-    add_record_to_database(operation, database)
+    return operation
 
 
 def add_branch_creation_to_database(branch_obj: Branch, main_branch, repo, database):
@@ -1049,6 +1079,8 @@ def find_all_file_events(branch, path, is_folder, sscm: SSCM):
 
     file_events = output.split("--END_COMMENT--\n\n")
 
+    rename_count = 0
+
     for ev in file_events:
         # the last operation might be empty due to how we split above. so we
         # can skip it.
@@ -1065,14 +1097,34 @@ def find_all_file_events(branch, path, is_folder, sscm: SSCM):
         author = ev_lines[4]
         comment = "\n".join(ev_lines[5:])
 
+        # Keep track of which rename this was because the version doesn't get bumped for
+        # renames
+        if (
+            action == SSCMFileAction.FileMoved
+            or action == SSCMFileAction.FileRenamed
+            or action == SSCMFileAction.RepoMoved
+            or action == SSCMFileAction.RepoRenamed
+        ):
+            rename_count += 1
+
         event = FileEvent(
-            path, branch, version, timestamp, action, data, author, comment, is_folder
+            path,
+            branch,
+            version,
+            timestamp,
+            action,
+            data,
+            author,
+            comment,
+            is_folder,
+            rename_count,
         )
 
         # We only care about rename events for folders
         if is_folder and (
             event.action != SSCMFileAction.RepoMoved
             and event.action != SSCMFileAction.RepoRenamed
+            and event.action != SSCMFileAction.RollbackChanges
         ):
             continue
 
@@ -1139,19 +1191,124 @@ def add_record_to_database(record, database):
         pass
     database.commit()
 
-    if record.action == Actions.FILE_RENAME:
-        c.execute(
-            """UPDATE operations SET origPath=? WHERE (action=? or action=?) AND mainline=? AND branch=? AND path=? AND (origPath IS NULL OR origPath='') AND version<=?""",
+    # if record.action == Actions.FILE_RENAME or record.action == Actions.FILE_MOVE:
+    #     c.execute(
+    #         """UPDATE operations SET origPath=? WHERE (action=? or action=?) AND mainline=? AND branch=? AND path=? AND (origPath IS NULL OR origPath='') AND version<=?""",
+    #         (
+    #             record.origPath,
+    #             Actions.FILE_MODIFY,
+    #             Actions.FILE_MERGE,
+    #             record.mainline,
+    #             record.branch,
+    #             record.path,
+    #             record.version,
+    #         ),
+    #     )
+    #     database.commit()
+
+    if record.action == Actions.FILE_MOVE or record.action == Actions.FILE_RENAME:
+        c0 = database.cursor()
+        c1 = database.cursor()
+        c0.execute(
+            """SELECT * FROM operations
+                        WHERE path == ? AND
+                              timestamp < ? AND
+                              ((branch == ?) OR (data == ? AND action == ?))
+                        ORDER BY timestamp DESC""",
             (
-                record.origPath,
-                Actions.FILE_MODIFY,
-                Actions.FILE_MERGE,
-                record.mainline,
-                record.branch,
                 record.path,
-                record.version,
+                record.timestamp,
+                record.branch,
+                record.branch,
+                Actions.FILE_MERGE_ADD,
             ),
         )
+
+        while old_record_tuple := c0.fetchone():
+            old_record = DatabaseRecord(old_record_tuple)
+
+            if (
+                record.action == Actions.FILE_MOVE
+                and old_record.action == Actions.FILE_MOVE
+            ) or (
+                record.action == Actions.FILE_RENAME
+                and old_record.action == Actions.FILE_RENAME
+            ):
+                break
+
+            old_folder = pathlib.PurePosixPath(record.origPath).parent
+            old_name = pathlib.PurePosixPath(record.origPath).name
+
+            if old_record.origPath:
+                if record.action == Actions.FILE_MOVE:
+                    new_orig_path = str(
+                        old_folder / pathlib.PurePosixPath(old_record.origPath).name
+                    )
+                else:
+                    new_orig_path = str(
+                        pathlib.PurePosixPath(old_record.origPath).parent / old_name
+                    )
+            else:
+                new_orig_path = record.origPath
+
+            if (
+                old_record.action == Actions.FILE_RENAME
+                or old_record.action == Actions.FILE_MOVE
+            ):
+                if record.action == Actions.FILE_MOVE:
+                    new_data = str(
+                        old_folder / pathlib.PurePosixPath(old_record.data).name
+                    )
+                else:
+                    new_data = str(
+                        pathlib.PurePosixPath(old_record.data).parent / old_name
+                    )
+
+                update_frename_tuple = (
+                    new_orig_path,
+                    new_data,
+                    old_record.action,
+                    old_record.mainline,
+                    old_record.branch,
+                    old_record.path,
+                    old_record.timestamp,
+                )
+                c1.execute(
+                    """UPDATE operations SET origPath=?, data=?
+                                    WHERE action== ? AND
+                                            mainline== ? AND
+                                            branch== ? AND
+                                            path== ? AND
+                                            timestamp == ?""",
+                    update_frename_tuple,
+                )
+                if c1.rowcount != 1:
+                    raise Exception(
+                        f'Could not update rename info for "{record.path}" in branch "{record.branch}"'
+                    )
+            else:
+                update_tuple = (
+                    new_orig_path,
+                    old_record.action,
+                    old_record.mainline,
+                    old_record.branch,
+                    old_record.path,
+                    old_record.timestamp,
+                )
+                c1.execute(
+                    """UPDATE operations SET origPath=?
+                                    WHERE action == ? AND
+                                            mainline == ? AND
+                                            branch == ? AND
+                                            path == ? AND
+                                            timestamp == ?""",
+                    update_tuple,
+                )
+                if c1.rowcount != 1:
+                    raise Exception(
+                        f'Could not update rename info for "{record.path}" in branch "{record.branch}"'
+                    )
+
         database.commit()
 
 
@@ -1205,10 +1362,26 @@ def cmd_parse(mainline, main_branch, database, sscm, parse_snapshot):
             events = find_all_file_events(
                 branch_obj.name, file_obj.path, is_folder, sscm
             )
-            for ev in events:
-                add_operation_to_db(
-                    ev, branches, branch_renames, main_branch, repo, database, sscm
+
+            for i in range(0, len(events)):
+                ev = events[i]
+                if i < (len(events) - 1):
+                    next_ev = events[i + 1]
+                else:
+                    next_ev = None
+                operation = add_operation_to_db(
+                    ev,
+                    next_ev,
+                    branches,
+                    branch_renames,
+                    main_branch,
+                    repo,
+                    database,
+                    sscm,
                 )
+
+                if operation:
+                    add_record_to_database(operation, database)
 
     logging.info("[+] Updating the database with folder rename info...")
     update_db_folder_renames(database)
@@ -1374,9 +1547,23 @@ def process_combined_commit(
     unique_comments = {}
 
     for record in record_group:
-        if record.action == Actions.FILE_MODIFY or record.action == Actions.FILE_MERGE:
+        if (
+            record.action == Actions.FILE_MODIFY
+            or record.action == Actions.FILE_MERGE
+            or record.action == Actions.FILE_MERGE_ADD
+        ):
+            # Okay so our special FILE_MERGE_ADD type instructions are file merges we
+            # detected that add a file to a branch. This detection is diffrent from other
+            # merge detections because we detected the merge from originating branch NOT
+            # the destination. This can cause problems if the file being merged was renemed
+            # at the destination branch. Because of this we get the file blob from the
+            # originating branch as we know that file name to be correct.
+            if record.action == Actions.FILE_MERGE_ADD:
+                blob_branch = record.data
+            else:
+                blob_branch = record.branch
             blob_mark = print_blob_for_file(
-                record.branch,
+                blob_branch,
                 pathlib.PurePosixPath(record.path),
                 sscm,
                 gitfi,
@@ -1454,7 +1641,11 @@ def process_combined_commit(
             full_origPath = pathlib.PurePosixPath(record.origPath)
             origPath = full_origPath.relative_to(repo)
 
-        if record.action == Actions.FILE_MODIFY or record.action == Actions.FILE_MERGE:
+        if (
+            record.action == Actions.FILE_MODIFY
+            or record.action == Actions.FILE_MERGE
+            or record.action == Actions.FILE_MERGE_ADD
+        ):
             if record.origPath and record.origPath != "NULL":
                 # looks like there was a previous rename.  use the original name.
                 gitfi.write(
@@ -1479,6 +1670,7 @@ def process_combined_commit(
         elif (
             record.action == Actions.FILE_RENAME
             or record.action == Actions.FOLDER_RENAME
+            or record.action == Actions.FILE_MOVE
         ):
             # NOTE we're not using record.path here, as there may have been multiple renames in the file's history
             full_data_path = pathlib.PurePosixPath(record.data)
@@ -1635,13 +1827,17 @@ def process_database_record_group(
             or record.action == Actions.FILE_DELETE
             or record.action == Actions.FILE_RENAME
             or record.action == Actions.FOLDER_RENAME
+            or record.action == Actions.FILE_MOVE
         ):
             # this is the usual case
             # We process these at the end as we need to loop through the list
             # several times to get the print order right
             normal_records.append(record)
 
-        elif record.action == Actions.FILE_MERGE:
+        elif (
+            record.action == Actions.FILE_MERGE
+            or record.action == Actions.FILE_MERGE_ADD
+        ):
             if record.data not in merge_records:
                 merge_records[record.data] = []
             merge_records[record.data].append(record)
@@ -1796,7 +1992,10 @@ def handle_command(parser):
         update_db_folder_renames(database)
     elif args.command == "all" and args.mainline and args.branch:
         # typical case
-        database = create_database()
+        if args.database:
+            database = sqlite3.connect(args.database)
+        else:
+            database = create_database()
         cmd_parse(args.mainline, args.branch, database, sscm, args.snapshot)
         cmd_export(database, args.email, sscm, args.default)
     elif args.command == "verify" and args.mainline and args.path:
