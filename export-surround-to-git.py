@@ -807,6 +807,7 @@ def update_db_folder_renames(database):
 def add_operation_to_db(
     event: Event,
     next_event: Event,
+    prev_op: DatabaseRecord,
     branches,
     branch_renames,
     main_branch,
@@ -988,6 +989,10 @@ def add_operation_to_db(
         # point, so for now just treat this as an in place modify.
         # TODO: maybe stop this and handle correctly in export phase.
         if data in branches and branches[data].is_snapshot():
+            action = Actions.FILE_MODIFY
+
+    elif event.action == SSCMFileAction.RollbackChanges:
+        if prev_op and prev_op.action == Actions.FILE_DELETE:
             action = Actions.FILE_MODIFY
 
     # The action is not something with a git equivalent
@@ -1363,6 +1368,7 @@ def cmd_parse(mainline, main_branch, database, sscm, parse_snapshot):
                 branch_obj.name, file_obj.path, is_folder, sscm
             )
 
+            prev_op = None
             for i in range(0, len(events)):
                 ev = events[i]
                 if i < (len(events) - 1):
@@ -1372,6 +1378,7 @@ def cmd_parse(mainline, main_branch, database, sscm, parse_snapshot):
                 operation = add_operation_to_db(
                     ev,
                     next_ev,
+                    prev_op,
                     branches,
                     branch_renames,
                     main_branch,
@@ -1382,6 +1389,8 @@ def cmd_parse(mainline, main_branch, database, sscm, parse_snapshot):
 
                 if operation:
                     add_record_to_database(operation, database)
+                    # TODO might need to check that operation actually got added
+                    prev_op = operation
 
     logging.info("[+] Updating the database with folder rename info...")
     update_db_folder_renames(database)
