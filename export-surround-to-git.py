@@ -1153,7 +1153,7 @@ def find_folder_renames(branches, renamed_folders, sscm: SSCM):
         if stderrdata:
             raise Exception(stderrdata)
 
-        r = r"Repository: ([^\r\n]*)\r?\n Rename"
+        r = r"Repository: ([^\r\n]*)\r?\n (Rename|Move)"
         mi = re.finditer(r, output)
 
         for m in mi:
