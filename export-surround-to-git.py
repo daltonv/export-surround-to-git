@@ -836,6 +836,12 @@ def add_operation_to_db(
         if next_event and next_event.action == SSCMFileAction.RollbackChanges:
             return None
 
+        # Surround handles merges that cause a rename weird. It logs two events at the
+        # exact same timestamp. First the merge and second the rename. To get the export
+        # stage to handle this correctly make the rename happen a second later.
+        if prev_op and prev_op.timestamp == timestamp and prev_op.action == Actions.FILE_MERGE:
+            timestamp += 1
+
         if event.is_folder:
             file = "/"
             folder = event.file
@@ -1317,7 +1323,7 @@ def add_record_to_database(record, database):
         database.commit()
 
 
-def cmd_parse(mainline, main_branch, database, sscm, parse_snapshot):
+def cmd_parse(mainline, main_branch, database, sscm, parse_snapshot, start_branch):
     logging.info("[+] Beginning parse phase...")
 
     branches, branch_renames, repo = find_all_branches(mainline, main_branch, sscm)
@@ -1337,16 +1343,23 @@ def cmd_parse(mainline, main_branch, database, sscm, parse_snapshot):
         logging.info("[*] Saved file list found. Loading and skipping file parse...")
         files_to_parse = jsonpickle.decode(saved_file_list.read_text())
 
-    logging.info("[*] Adding branch creation operations to database...")
+    if not start_branch:
+        logging.info("[*] Adding branch creation operations to database...")
+        for branch in branches:
+            branch_obj = branches[branch]
+
+            # Our root branch won't have a branch creation op
+            if not branch_obj.is_main():
+                add_branch_creation_to_database(branch_obj, main_branch, repo, database)
+
+    found_start_branch = False
     for branch in branches:
         branch_obj = branches[branch]
 
-        # Our root branch won't have a branch creation op
-        if not branch_obj.is_main():
-            add_branch_creation_to_database(branch_obj, main_branch, repo, database)
-
-    for branch in branches:
-        branch_obj = branches[branch]
+        if not found_start_branch and start_branch and start_branch != branch:
+            continue
+        elif not found_start_branch and start_branch and start_branch == branch:
+            found_start_branch = True
 
         # Skip snapshot branches
         if not parse_snapshot and branch_obj.is_snapshot():
@@ -1992,7 +2005,7 @@ def handle_command(parser):
             database = sqlite3.connect(args.database)
         else:
             database = create_database()
-        cmd_parse(args.mainline, args.branch, database, sscm, args.snapshot)
+        cmd_parse(args.mainline, args.branch, database, sscm, args.snapshot, args.start_branch)
     elif args.command == "export" and args.database:
         database = sqlite3.connect(args.database)
         cmd_export(database, args.email, sscm, args.default)
@@ -2005,7 +2018,7 @@ def handle_command(parser):
             database = sqlite3.connect(args.database)
         else:
             database = create_database()
-        cmd_parse(args.mainline, args.branch, database, sscm, args.snapshot)
+        cmd_parse(args.mainline, args.branch, database, sscm, args.snapshot, args.start_branch)
         cmd_export(database, args.email, sscm, args.default)
     elif args.command == "verify" and args.mainline and args.path:
         # the 'verify' operation must take place after the export has completed.
@@ -2041,6 +2054,7 @@ def parse_arguments():
     )
     parser.add_argument("-ho", "--host", help="Surround SCM server host address")
     parser.add_argument("-po", "--port", help="Surround SCM server port number")
+    parser.add_argument("--start_branch", help="Branch to start parsing at")
     parser.add_argument("--snapshot", action="store_true")
     parser.add_argument("--email", help="Domain for the email address")
     parser.add_argument("--version", action="version", version="%(prog)s " + VERSION)
