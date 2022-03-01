@@ -704,7 +704,7 @@ def update_db_folder_renames(database):
             # their origPaths
             c2.execute(
                 f"""SELECT * FROM operations
-                                WHERE path == '{file_path}' and
+                                WHERE path == "{file_path}" and
                                       timestamp < {rename_op.timestamp} and
                                       branch == "{rename_op.branch}"
                                 ORDER BY timestamp DESC"""
@@ -839,7 +839,11 @@ def add_operation_to_db(
         # Surround handles merges that cause a rename weird. It logs two events at the
         # exact same timestamp. First the merge and second the rename. To get the export
         # stage to handle this correctly make the rename happen a second later.
-        if prev_op and prev_op.timestamp == timestamp and prev_op.action == Actions.FILE_MERGE:
+        if (
+            prev_op
+            and prev_op.timestamp == timestamp
+            and prev_op.action == Actions.FILE_MERGE
+        ):
             timestamp += 1
 
         if event.is_folder:
@@ -1323,7 +1327,7 @@ def add_record_to_database(record, database):
         database.commit()
 
 
-def cmd_parse(mainline, main_branch, database, sscm, parse_snapshot, start_branch):
+def cmd_parse(mainline, main_branch, database, sscm, parse_snapshot):
     logging.info("[+] Beginning parse phase...")
 
     branches, branch_renames, repo = find_all_branches(mainline, main_branch, sscm)
@@ -1343,23 +1347,16 @@ def cmd_parse(mainline, main_branch, database, sscm, parse_snapshot, start_branc
         logging.info("[*] Saved file list found. Loading and skipping file parse...")
         files_to_parse = jsonpickle.decode(saved_file_list.read_text())
 
-    if not start_branch:
-        logging.info("[*] Adding branch creation operations to database...")
-        for branch in branches:
-            branch_obj = branches[branch]
-
-            # Our root branch won't have a branch creation op
-            if not branch_obj.is_main():
-                add_branch_creation_to_database(branch_obj, main_branch, repo, database)
-
-    found_start_branch = False
+    logging.info("[*] Adding branch creation operations to database...")
     for branch in branches:
         branch_obj = branches[branch]
 
-        if not found_start_branch and start_branch and start_branch != branch:
-            continue
-        elif not found_start_branch and start_branch and start_branch == branch:
-            found_start_branch = True
+        # Our root branch won't have a branch creation op
+        if not branch_obj.is_main():
+            add_branch_creation_to_database(branch_obj, main_branch, repo, database)
+
+    for branch in branches:
+        branch_obj = branches[branch]
 
         # Skip snapshot branches
         if not parse_snapshot and branch_obj.is_snapshot():
@@ -1371,6 +1368,9 @@ def cmd_parse(mainline, main_branch, database, sscm, parse_snapshot, start_branc
             file_obj = files_to_parse[file]
 
             if branch_obj.name not in file_obj.branches:
+                continue
+
+            if ".git" in file_obj.path.parts:
                 continue
 
             logging.debug("[*] \tParsing file '%s' ..." % file_obj.path)
@@ -1914,7 +1914,7 @@ def cmd_export(database, email_domain, sscm, default_branch):
     c1 = database.cursor()
     c2 = database.cursor()
     c1.execute(
-        """SELECT timestamp, branch FROM operations GROUP BY timestamp, branch, author ORDER BY timestamp ASC"""
+        """SELECT timestamp, branch, author FROM operations GROUP BY timestamp, branch, author ORDER BY timestamp ASC"""
     )
 
     gitfi.write(b"reset refs/heads/main\n")
@@ -1922,8 +1922,12 @@ def cmd_export(database, email_domain, sscm, default_branch):
     count = 0
     while record := c1.fetchone():
         c2.execute(
-            "SELECT * FROM operations WHERE timestamp == %d AND branch == '%s' ORDER BY action ASC"
-            % (record[0], record[1])
+            "SELECT * FROM operations WHERE timestamp == %d AND branch == '%s' AND author == '%s' ORDER BY action ASC"
+            % (record[0], record[1], record[2])
+        )
+
+        logging.debug(
+            f"Processing records at timestamp={record[0]} and branch = '{record[1]}' and author = '{record[2]}'"
         )
         process_database_record_group(
             c2, sscm, scratchDir, default_branch, gitfi, email_domain
@@ -2005,7 +2009,9 @@ def handle_command(parser):
             database = sqlite3.connect(args.database)
         else:
             database = create_database()
-        cmd_parse(args.mainline, args.branch, database, sscm, args.snapshot, args.start_branch)
+        cmd_parse(
+            args.mainline, args.branch, database, sscm, args.snapshot
+        )
     elif args.command == "export" and args.database:
         database = sqlite3.connect(args.database)
         cmd_export(database, args.email, sscm, args.default)
@@ -2018,7 +2024,9 @@ def handle_command(parser):
             database = sqlite3.connect(args.database)
         else:
             database = create_database()
-        cmd_parse(args.mainline, args.branch, database, sscm, args.snapshot, args.start_branch)
+        cmd_parse(
+            args.mainline, args.branch, database, sscm, args.snapshot
+        )
         cmd_export(database, args.email, sscm, args.default)
     elif args.command == "verify" and args.mainline and args.path:
         # the 'verify' operation must take place after the export has completed.
@@ -2054,7 +2062,6 @@ def parse_arguments():
     )
     parser.add_argument("-ho", "--host", help="Surround SCM server host address")
     parser.add_argument("-po", "--port", help="Surround SCM server port number")
-    parser.add_argument("--start_branch", help="Branch to start parsing at")
     parser.add_argument("--snapshot", action="store_true")
     parser.add_argument("--email", help="Domain for the email address")
     parser.add_argument("--version", action="version", version="%(prog)s " + VERSION)
